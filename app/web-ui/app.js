@@ -2,7 +2,6 @@
 
 // ---- State ----
 const state = {
-  ws: null,
   recording: false,
   speakers: {}, // id -> { name, color }
   segments: [], // ordered transcript segments
@@ -14,33 +13,15 @@ const SPEAKER_COLORS = [
   '#fc8181', '#b794f4', '#76e4f7', '#fbd38d',
 ];
 
-// ---- WebSocket ----
-function connectWS() {
-  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-  const ws = new WebSocket(`${proto}://${location.host}/ws`);
-  state.ws = ws;
+// ---- Tauri bridge ----
+function invoke(cmd, args) {
+  return window.__TAURI__.core.invoke(cmd, args);
+}
 
-  ws.onopen = () => {
-    setWsBadge(true);
-    console.log('[WS] connected');
-  };
-
-  ws.onclose = () => {
-    setWsBadge(false);
-    console.log('[WS] disconnected, reconnecting in 2s...');
-    setTimeout(connectWS, 2000);
-  };
-
-  ws.onerror = (e) => console.error('[WS] error', e);
-
-  ws.onmessage = (e) => {
-    try {
-      const msg = JSON.parse(e.data);
-      handleMessage(msg);
-    } catch (err) {
-      console.error('[WS] bad JSON', e.data, err);
-    }
-  };
+async function connectTauri() {
+  await window.__TAURI__.event.listen('pipeline-event', (event) => {
+    handleMessage(event.payload);
+  });
 }
 
 function handleMessage(msg) {
@@ -49,16 +30,22 @@ function handleMessage(msg) {
       addSegment(msg);
       break;
     case 'final_summary':
-      showSummaryModal(msg.text);
+      showDebrief(msg.text);
       break;
     case 'speaker_update':
       updateSpeakerName(msg.speaker_id, msg.name);
       break;
     case 'status':
-      setRecordingState(msg.state === 'recording');
+      if (msg.state === 'ready') {
+        setPipelineReady(true);
+      } else if (msg.state === 'recording') {
+        setRecordingState(true);
+      } else if (msg.state === 'stopped') {
+        setRecordingState(false);
+      }
       break;
     default:
-      console.log('[WS] unknown msg type', msg.type, msg);
+      console.log('[Tauri] unknown msg type', msg.type, msg);
   }
 }
 
@@ -109,29 +96,69 @@ function clearTranscript() {
   document.getElementById('transcript').innerHTML = '';
 }
 
-// ---- Summary modal ----
+// ---- Debrief page ----
 let _summaryText = '';
 
-function showSummaryLoading() {
+function showDebriefLoading() {
   _summaryText = '';
   document.getElementById('btn-copy').style.display = 'none';
-  const body = document.getElementById('modal-body');
-  body.innerHTML = '<div class="modal-loader"><div class="spinner"></div><span>Generating summary…</span></div>';
-  document.getElementById('modal-overlay').classList.remove('hidden');
+  document.getElementById('debrief-body').innerHTML =
+    '<div class="debrief-loader">' +
+    '<div class="debrief-loader-row"><div class="spinner"></div><span>Re-transcribing session audio…</span></div>' +
+    '<div class="debrief-loader-sub">Generating debrief — this may take a moment</div>' +
+    '</div>';
+  // Populate transcript tab now (segments are complete at this point)
+  populateTranscriptTab();
+  showPage('debrief');
+  switchTab('debrief-tab');
 }
 
-function showSummaryModal(text) {
+function populateTranscriptTab() {
+  const el = document.getElementById('transcript-tab-body');
+  if (!el) return;
+  if (!state.segments.length) {
+    el.innerHTML = '<p class="tab-empty">No transcript recorded.</p>';
+    return;
+  }
+  el.innerHTML = state.segments.map(seg => {
+    const spk = (state.speakers[seg.speaker_id] || {}).name || seg.speaker_name || seg.speaker_id;
+    const color = (state.speakers[seg.speaker_id] || {}).color || '#888';
+    const time = formatTime(seg.start_us);
+    return `<div class="tx-seg">
+      <div class="tx-seg-header">
+        <span class="tx-spk" style="color:${color}">${escHtml(spk)}</span>
+        <span class="tx-time">${time}</span>
+      </div>
+      <div class="tx-text">${escHtml(seg.text)}</div>
+    </div>`;
+  }).join('');
+}
+
+function switchTab(tabId) {
+  document.querySelectorAll('.debrief-tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.debrief-tab-panel').forEach(p => p.classList.add('hidden'));
+  document.getElementById(tabId).classList.add('active');
+  document.getElementById(tabId + '-panel').classList.remove('hidden');
+  // Copy button only relevant on debrief tab
+  document.getElementById('btn-copy').style.display =
+    (tabId === 'debrief-tab' && _summaryText) ? '' : 'none';
+}
+
+function showDebrief(text) {
   _summaryText = text;
-  const body = document.getElementById('modal-body');
-  body.innerHTML = text
+  document.getElementById('debrief-body').innerHTML = text
     ? marked.parse(text)
-    : '<p style="color:var(--text-muted)">No summary available (conversation too short or Ollama unavailable).</p>';
-  document.getElementById('btn-copy').style.display = text ? '' : 'none';
-  document.getElementById('modal-overlay').classList.remove('hidden');
+    : '<p class="tab-empty">No debrief available — conversation too short or Ollama unreachable.</p>';
+  // Show copy button and switch to debrief tab
+  switchTab('debrief-tab');
 }
 
-function closeModal() {
-  document.getElementById('modal-overlay').classList.add('hidden');
+function newSession() {
+  state.segments = [];
+  state.speakers = {};
+  document.getElementById('transcript').innerHTML = '';
+  document.getElementById('speakers-list').innerHTML = '';
+  showPage('landing');
 }
 
 async function copySummary() {
@@ -140,7 +167,7 @@ async function copySummary() {
     await navigator.clipboard.writeText(_summaryText);
     const btn = document.getElementById('btn-copy');
     btn.textContent = 'Copied!';
-    setTimeout(() => { btn.textContent = 'Copy'; }, 2000);
+    setTimeout(() => { btn.textContent = 'Copy'; }, 1800);
   } catch (e) {
     console.error('copy failed', e);
   }
@@ -193,11 +220,7 @@ function updateSpeakerName(id, name) {
 async function renameSpeaker(id, name) {
   state.speakers[id].name = name;
   try {
-    await fetch('/api/speakers', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ speaker_id: id, name }),
-    });
+    await invoke('update_speaker', { speaker_id: id, name });
   } catch (e) {
     console.error('rename failed', e);
   }
@@ -206,12 +229,7 @@ async function renameSpeaker(id, name) {
 // ---- Controls ----
 async function startRecording() {
   try {
-    const res = await fetch('/api/start', { method: 'POST' });
-    if (!res.ok) {
-      const text = await res.text();
-      alert(`Start failed: ${text}`);
-      return;
-    }
+    await invoke('start_recording');
     setRecordingState(true);
   } catch (e) {
     alert(`Start error: ${e}`);
@@ -220,35 +238,47 @@ async function startRecording() {
 
 async function stopRecording() {
   try {
-    const res = await fetch('/api/stop', { method: 'POST' });
-    if (!res.ok) {
-      const text = await res.text();
-      alert(`Stop failed: ${text}`);
-      return;
-    }
+    await invoke('stop_recording');
     setRecordingState(false);
-    showSummaryLoading();
+    showDebriefLoading();
   } catch (e) {
     alert(`Stop error: ${e}`);
   }
 }
 
+function currentPage() {
+  for (const id of ['landing', 'workspace', 'debrief']) {
+    if (!document.getElementById(id).classList.contains('hidden')) return id;
+  }
+  return 'landing';
+}
+
+function showPage(page) {
+  ['landing', 'workspace', 'debrief'].forEach(id => {
+    document.getElementById(id).classList.toggle('hidden', id !== page);
+  });
+}
+
+function setPipelineReady(ready) {
+  const btn = document.getElementById('btn-start');
+  if (!btn) return;
+  btn.disabled = !ready;
+  btn.textContent = ready ? 'START SESSION' : 'LOADING...';
+}
+
 function setRecordingState(recording) {
   state.recording = recording;
-  document.getElementById('btn-start').disabled = recording;
-  document.getElementById('btn-stop').disabled = !recording;
-  const badge = document.getElementById('status-badge');
-  badge.textContent = recording ? 'Recording' : 'Idle';
-  badge.className = `badge ${recording ? 'badge-recording' : 'badge-idle'}`;
+  if (recording) {
+    showPage('workspace');
+  } else if (currentPage() === 'workspace') {
+    // Only navigate away from workspace (not from debrief which is already showing)
+    showPage('landing');
+  }
+  const recDot = document.getElementById('rec-dot');
+  if (recDot) recDot.className = `dot ${recording ? 'dot-rec' : ''}`;
 }
 
 // ---- Helpers ----
-function setWsBadge(connected) {
-  const badge = document.getElementById('ws-badge');
-  badge.className = `badge ${connected ? 'badge-connected' : 'badge-disconnected'}`;
-  badge.textContent = connected ? 'Connected' : 'Disconnected';
-}
-
 function formatTime(us) {
   const s = Math.floor(us / 1_000_000);
   const h = Math.floor(s / 3600);
@@ -277,10 +307,9 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   // Fetch initial status
-  fetch('/api/status')
-    .then(r => r.json())
+  invoke('get_status')
     .then(d => setRecordingState(d.recording))
     .catch(() => {});
 
-  connectWS();
+  connectTauri();
 });

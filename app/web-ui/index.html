@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CORPODRONE</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;600;700&family=Share+Tech+Mono&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <div id="scanlines" aria-hidden="true"></div>
+
+  <!-- ── IDLE: Landing ─────────────────────────────────────────────── -->
+  <div id="landing">
+    <div id="landing-center">
+      <h1 id="landing-title">CORPO<span class="hi">DRONE</span></h1>
+      <p id="landing-sub">// AUDIO INTELLIGENCE SYSTEM</p>
+      <button id="btn-start" onclick="startRecording()" disabled>LOADING...</button>
+    </div>
+  </div>
+
+  <!-- ── RECORDING: Workspace ──────────────────────────────────────── -->
+  <div id="workspace" class="hidden">
+    <header>
+      <div id="brand">
+        <h1>CORPO<span class="hi">DRONE</span></h1>
+        <div class="header-indicators">
+          <span class="dot dot-rec" id="rec-dot"></span>
+          <span class="status-label">REC</span>
+        </div>
+      </div>
+      <button id="btn-stop" onclick="stopRecording()">End Session</button>
+    </header>
+
+    <div id="main">
+      <section id="transcript-panel">
+        <div class="panel-header">
+          <div class="panel-title">
+            <span class="panel-idx">[01]</span>
+            <h2>LIVE TRANSCRIPT</h2>
+          </div>
+          <button onclick="clearTranscript()" class="btn-ghost">Clear</button>
+        </div>
+        <div id="transcript" class="scrollable"></div>
+      </section>
+
+      <aside id="sidebar">
+        <div class="panel-header">
+          <div class="panel-title">
+            <span class="panel-idx">[02]</span>
+            <h2>SPEAKERS</h2>
+          </div>
+        </div>
+        <div id="speakers-list"></div>
+      </aside>
+    </div>
+  </div>
+
+  <!-- ── DEBRIEF page ───────────────────────────────────────────────── -->
+  <div id="debrief" class="hidden">
+    <header>
+      <div id="brand">
+        <h1>CORPO<span class="hi">DRONE</span></h1>
+      </div>
+      <div class="header-right">
+        <button id="btn-copy" class="btn-ghost" onclick="copySummary()" style="display:none">Copy</button>
+        <button class="btn-new-session" onclick="newSession()">New Session</button>
+      </div>
+    </header>
+    <div id="debrief-content">
+      <div id="debrief-tabs">
+        <button id="debrief-tab" class="debrief-tab active" onclick="switchTab('debrief-tab')">Debrief</button>
+        <button id="transcript-tab" class="debrief-tab" onclick="switchTab('transcript-tab')">Transcript</button>
+      </div>
+      <div id="debrief-tab-panel" class="debrief-tab-panel">
+        <div id="debrief-body"></div>
+      </div>
+      <div id="transcript-tab-panel" class="debrief-tab-panel hidden">
+        <div id="transcript-tab-body"></div>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>
