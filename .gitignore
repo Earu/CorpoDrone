@@ -1,0 +1,11 @@
+target/
+Cargo.lock
+__pycache__/
+*.pyc
+python/__pycache__/
+python/speakers.json
+python/models/
+*.egg-info/
+.env
+.venv
+.claude

@@ -1,0 +1,33 @@
+# CorpoDrone configuration
+# Edit this file to configure the pipeline without recompiling.
+
+[python]
+# Whisper model size: tiny / base / small / medium / large-v3
+# Larger = more accurate but slower. "small" is a good default.
+whisper_model = "small"
+whisper_device = "auto"       # auto / cuda / cpu
+whisper_compute_type = "auto" # auto / float16 / int8
+
+# Speaker diarization (requires HuggingFace token)
+diarize = true
+min_speakers = 1
+max_speakers = 8
+
+# Sliding window config (seconds)
+window_seconds = 5.0
+step_seconds = 1.0
+
+# Summarization via Ollama
+summarize = true
+summarize_interval_seconds = 60
+ollama_model = "mistral"
+ollama_host = "http://localhost:11434"
+
+# Named pipes (must match Rust side)
+audio_pipe = '\\.\pipe\corpodrone-audio'
+transcript_pipe = '\\.\pipe\corpodrone-transcript'
+
+[server]
+# Python executable — points at the venv
+python_exe = '.venv\Scripts\python.exe'
+python_script = 'python\pipeline.py'
