@@ -1,10 +1,11 @@
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Emitter, State};
 
 static RECORDING: AtomicBool = AtomicBool::new(false);
 static MUTED: AtomicBool = AtomicBool::new(false);
 static PYTHON_PID: AtomicU32 = AtomicU32::new(0);
+static SHUTTING_DOWN: AtomicBool = AtomicBool::new(false);
 
 struct Config {
     transcript_pipe: String,
@@ -141,6 +142,71 @@ fn set_pipeline_mode(mode: String) -> serde_json::Value {
     serde_json::json!({ "ok": true })
 }
 
+// ── Speaker identity database ──────────────────────────────────────────────
+
+fn read_speakers_db() -> serde_json::Value {
+    let path = std::path::Path::new("speakers_db.json");
+    if !path.exists() {
+        return serde_json::json!({ "version": 1, "persons": {} });
+    }
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or(serde_json::json!({ "version": 1, "persons": {} }))
+}
+
+fn write_speakers_db(data: &serde_json::Value) {
+    if let Ok(s) = serde_json::to_string(data) {
+        let _ = std::fs::write("speakers_db.json", s);
+    }
+}
+
+#[tauri::command]
+fn get_speaker_database() -> serde_json::Value {
+    read_speakers_db()
+}
+
+#[tauri::command]
+fn enroll_speaker(name: String, person_id: Option<String>, embedding: Vec<f64>) -> serde_json::Value {
+    let mut db = read_speakers_db();
+    let pid = person_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    if let Some(persons) = db["persons"].as_object_mut() {
+        if let Some(person) = persons.get_mut(&pid) {
+            if let Some(arr) = person["embeddings"].as_array_mut() {
+                arr.push(serde_json::json!(embedding));
+            }
+        } else {
+            persons.insert(pid.clone(), serde_json::json!({
+                "name": name,
+                "embeddings": [embedding],
+            }));
+        }
+    }
+    write_speakers_db(&db);
+    serde_json::json!({ "ok": true, "person_id": pid })
+}
+
+#[tauri::command]
+fn delete_speaker(person_id: String) -> serde_json::Value {
+    let mut db = read_speakers_db();
+    let removed = db["persons"].as_object_mut()
+        .map(|p| p.remove(&person_id).is_some())
+        .unwrap_or(false);
+    if removed { write_speakers_db(&db); }
+    serde_json::json!({ "ok": removed })
+}
+
+#[tauri::command]
+fn rename_speaker(person_id: String, name: String) -> serde_json::Value {
+    let mut db = read_speakers_db();
+    let ok = if let Some(person) = db["persons"].get_mut(&person_id) {
+        person["name"] = serde_json::json!(name);
+        write_speakers_db(&db);
+        true
+    } else { false };
+    serde_json::json!({ "ok": ok })
+}
+
 #[tauri::command]
 async fn update_speaker(
     speaker_id: String,
@@ -250,31 +316,52 @@ async fn spawn_python(cfg: &Config) -> anyhow::Result<()> {
         anyhow::bail!("Python script not found: {}", script.display());
     }
 
-    tracing::info!(
-        "Spawning Python pipeline: {} {}",
-        cfg.python_exe,
-        script.display()
-    );
+    loop {
+        tracing::info!(
+            "Spawning Python pipeline: {} {}",
+            cfg.python_exe,
+            script.display()
+        );
 
-    let mut cmd = tokio::process::Command::new(&cfg.python_exe);
-    cmd.arg(script);
+        let mut cmd = tokio::process::Command::new(&cfg.python_exe);
+        cmd.arg(&cfg.python_script);
 
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
-        cmd.creation_flags(CREATE_NEW_PROCESS_GROUP);
-    }
+        #[cfg(windows)]
+        {
+            const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
+            cmd.creation_flags(CREATE_NEW_PROCESS_GROUP);
+        }
 
-    let child = cmd.spawn()?;
-    if let Some(pid) = child.id() {
-        PYTHON_PID.store(pid, Ordering::Relaxed);
-        tracing::info!("Python pipeline pid={pid}");
+        match cmd.spawn() {
+            Ok(mut child) => {
+                if let Some(pid) = child.id() {
+                    PYTHON_PID.store(pid, Ordering::Relaxed);
+                    tracing::info!("Python pipeline pid={pid}");
+                }
+                let _ = child.wait().await;
+                tracing::info!("Python pipeline exited");
+            }
+            Err(e) => {
+                tracing::warn!("Failed to spawn Python pipeline: {e}");
+            }
+        }
+
+        if SHUTTING_DOWN.load(Ordering::Relaxed) {
+            break;
+        }
+
+        tracing::info!("Restarting Python pipeline in 1s...");
+        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+
+        if SHUTTING_DOWN.load(Ordering::Relaxed) {
+            break;
+        }
     }
     Ok(())
 }
 
 fn kill_subprocesses() {
+    SHUTTING_DOWN.store(true, Ordering::Relaxed);
     let pid = PYTHON_PID.load(Ordering::Relaxed);
     if pid != 0 {
         let _ = std::process::Command::new("taskkill")
@@ -326,6 +413,10 @@ pub fn run() {
             update_speaker,
             set_pipeline_mode,
             set_mute,
+            get_speaker_database,
+            enroll_speaker,
+            delete_speaker,
+            rename_speaker,
         ])
         .setup(move |app| {
             let app_handle = app.handle().clone();

@@ -17,6 +17,7 @@
       <h1 id="landing-title">CORPO<span class="hi">DRONE</span></h1>
       <p id="landing-sub">// AUDIO INTELLIGENCE SYSTEM</p>
       <button id="btn-start" onclick="startRecording()" disabled>LOADING...</button>
+      <button class="btn-voices" onclick="openVoicesModal()">VOICE DATABASE</button>
     </div>
   </div>
 
@@ -101,6 +102,46 @@
       </div>
       <div id="transcript-tab-panel" class="debrief-tab-panel hidden">
         <div id="transcript-tab-body"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Enrollment modal ───────────────────────────────────────────── -->
+  <div id="enrollment-modal" class="modal-overlay hidden">
+    <div class="modal">
+      <div class="modal-header">
+        <div class="modal-title">UNKNOWN SPEAKERS</div>
+        <div class="modal-sub">Label each speaker or skip to continue</div>
+      </div>
+      <div class="modal-body">
+        <div id="enrollment-carousel">
+          <!-- populated by JS -->
+        </div>
+        <div id="enrollment-nav">
+          <button class="btn-ghost" onclick="enrollPrev()">← Prev</button>
+          <span id="enrollment-page-label" class="enrollment-page-label"></span>
+          <button class="btn-ghost" onclick="enrollNext()">Next →</button>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn-ghost" onclick="skipEnrollment()">Skip All</button>
+        <button class="btn-modal-primary" onclick="submitEnrollment()">Done — Continue</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Voice database modal ───────────────────────────────────────── -->
+  <div id="voices-modal" class="modal-overlay hidden">
+    <div class="modal">
+      <div class="modal-header">
+        <div class="modal-title">VOICE DATABASE</div>
+        <div class="modal-sub">Manage recognized speakers</div>
+      </div>
+      <div class="modal-body">
+        <div id="voices-list"><!-- populated by JS --></div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn-ghost" onclick="closeVoicesModal()">Close</button>
       </div>
     </div>
   </div>

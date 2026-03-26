@@ -14,5 +14,7 @@ app/gen/
 
 # Runtime state
 speakers.json
+speakers_db.json
 
 .pipeline_mode
+.speechbrain_models

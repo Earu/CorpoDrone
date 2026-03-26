@@ -25,24 +25,20 @@ def cosine_sim(a: np.ndarray, b: np.ndarray) -> float:
 
 
 class SpeakerTracker:
-    def __init__(self, speakers_file: str = "speakers.json"):
+    def __init__(self, speakers_file: str = "speakers.json", encoder=None):
         self.speakers_file = speakers_file
         # stable_id -> {"name": str, "embedding": np.ndarray | None}
         self._speakers: Dict[str, dict] = {}
         self._next_id = 0
         self._load()
-        self._encoder = None
-        self._init_encoder()
+        # Optional encoder: any object with extract(audio: np.ndarray) -> np.ndarray | None
+        self._encoder = encoder
+        if encoder is not None and getattr(encoder, "available", False):
+            log.info("speaker_tracker_using_ecapa_embeddings")
+        else:
+            log.info("speaker_tracker_label_only")
         # per-session mapping: pyannote_label -> stable_id (instance-level, not class-level)
         self._session_map: Dict[str, str] = {}
-
-    def _init_encoder(self):
-        try:
-            from resemblyzer import VoiceEncoder
-            self._encoder = VoiceEncoder()
-            log.info("resemblyzer_loaded")
-        except ImportError:
-            log.warning("resemblyzer_not_found_speaker_tracking_by_label_only")
 
     def _load(self):
         if os.path.exists(self.speakers_file):
@@ -74,12 +70,10 @@ class SpeakerTracker:
             log.warning("speakers_save_failed", error=str(e))
 
     def _get_embedding(self, audio: np.ndarray, label: str) -> Optional[np.ndarray]:
-        if self._encoder is None:
+        if self._encoder is None or not getattr(self._encoder, "available", False):
             return None
         try:
-            from resemblyzer import preprocess_wav
-            wav = preprocess_wav(audio, source_sr=16_000)
-            return self._encoder.embed_utterance(wav)
+            return self._encoder.extract(audio)
         except Exception as e:
             log.debug("embed_failed", label=label, error=str(e))
             return None
