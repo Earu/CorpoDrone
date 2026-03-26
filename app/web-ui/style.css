@@ -135,6 +135,31 @@ button.btn-ghost {
 }
 button.btn-ghost:hover { color: var(--text); border-color: var(--text-muted); }
 
+.btn-mute {
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  padding: 5px 14px;
+  background: var(--cyan-dim);
+  color: var(--cyan);
+  border: 1px solid var(--cyan);
+  border-radius: 0;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+.btn-mute:hover {
+  background: rgba(0, 212, 255, 0.14);
+}
+.btn-mute.muted {
+  background: var(--danger-dim);
+  color: var(--danger);
+  border-color: var(--danger);
+}
+.btn-mute.muted:hover {
+  background: rgba(255, 48, 48, 0.2);
+}
+
 #btn-stop {
   font-family: var(--font);
   font-size: 14px;
@@ -600,3 +625,96 @@ button.btn-ghost:hover { color: var(--text); border-color: var(--text-muted); }
 }
 
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* ── Debrief choice ──────────────────────────────────────────────── */
+.debrief-choice-desc {
+  font-family: var(--mono);
+  font-size: 12px;
+  letter-spacing: 0.1em;
+  color: var(--text-muted);
+  margin-bottom: 20px;
+}
+
+.debrief-choice-btns {
+  display: flex;
+  gap: 16px;
+}
+
+.debrief-choice-opt {
+  flex: 1;
+  padding: 20px 24px;
+  border: 1px solid var(--border-hi);
+  background: var(--surface);
+  cursor: pointer;
+  transition: border-color 0.12s, background 0.12s;
+}
+
+.debrief-choice-opt:hover {
+  border-color: var(--text-muted);
+  background: #111;
+}
+
+.debrief-choice-opt-primary {
+  border-color: var(--accent);
+  background: var(--accent-dim);
+}
+
+.debrief-choice-opt-primary:hover {
+  background: rgba(200, 255, 0, 0.14);
+  box-shadow: var(--accent-glow);
+}
+
+.debrief-choice-title {
+  font-family: var(--font);
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text);
+  margin-bottom: 6px;
+}
+
+.debrief-choice-opt-primary .debrief-choice-title {
+  color: var(--accent);
+}
+
+.debrief-choice-sub {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-muted);
+  letter-spacing: 0.05em;
+}
+
+/* ── Debrief progress bar ────────────────────────────────────────── */
+#debrief-progress {
+  padding: 12px 0;
+}
+
+.debrief-progress-label {
+  font-family: var(--mono);
+  font-size: 12px;
+  letter-spacing: 0.1em;
+  color: var(--text-muted);
+  margin-bottom: 12px;
+}
+
+.progress-bar-track {
+  height: 2px;
+  background: var(--border-hi);
+  width: 100%;
+  margin-bottom: 8px;
+}
+
+.progress-bar-fill {
+  height: 100%;
+  background: var(--accent);
+  box-shadow: 0 0 8px rgba(200, 255, 0, 0.5);
+  transition: width 0.3s ease;
+}
+
+.debrief-progress-pct {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--accent);
+  letter-spacing: 0.1em;
+}

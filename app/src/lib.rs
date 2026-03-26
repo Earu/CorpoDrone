@@ -3,6 +3,7 @@ use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 static RECORDING: AtomicBool = AtomicBool::new(false);
+static MUTED: AtomicBool = AtomicBool::new(false);
 static PYTHON_PID: AtomicU32 = AtomicU32::new(0);
 
 struct Config {
@@ -72,7 +73,21 @@ fn load_config() -> Config {
 
 #[tauri::command]
 fn get_status() -> serde_json::Value {
-    serde_json::json!({ "recording": RECORDING.load(Ordering::Relaxed) })
+    serde_json::json!({
+        "recording": RECORDING.load(Ordering::Relaxed),
+        "muted": MUTED.load(Ordering::Relaxed),
+    })
+}
+
+#[tauri::command]
+fn set_mute(muted: bool) -> serde_json::Value {
+    MUTED.store(muted, Ordering::Relaxed);
+    if muted {
+        let _ = std::fs::write(".mic_muted", "1");
+    } else {
+        let _ = std::fs::remove_file(".mic_muted");
+    }
+    serde_json::json!({ "ok": true, "muted": muted })
 }
 
 #[tauri::command]
@@ -114,8 +129,16 @@ async fn stop_recording() -> Result<serde_json::Value, String> {
         .await;
 
     RECORDING.store(false, Ordering::Relaxed);
+    MUTED.store(false, Ordering::Relaxed);
+    let _ = std::fs::remove_file(".mic_muted");
     tracing::info!("Recording stopped");
     Ok(serde_json::json!({ "ok": true }))
+}
+
+#[tauri::command]
+fn set_pipeline_mode(mode: String) -> serde_json::Value {
+    let _ = std::fs::write(".pipeline_mode", &mode);
+    serde_json::json!({ "ok": true })
 }
 
 #[tauri::command]
@@ -301,6 +324,8 @@ pub fn run() {
             start_recording,
             stop_recording,
             update_speaker,
+            set_pipeline_mode,
+            set_mute,
         ])
         .setup(move |app| {
             let app_handle = app.handle().clone();

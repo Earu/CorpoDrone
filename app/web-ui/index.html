@@ -30,7 +30,10 @@
           <span class="status-label">REC</span>
         </div>
       </div>
-      <button id="btn-stop" onclick="stopRecording()">End Session</button>
+      <div class="header-right">
+        <button id="btn-mute" onclick="toggleMute()" class="btn-mute">MIC ON</button>
+        <button id="btn-stop" onclick="stopRecording()">End Session</button>
+      </div>
     </header>
 
     <div id="main">
@@ -74,6 +77,26 @@
         <button id="transcript-tab" class="debrief-tab" onclick="switchTab('transcript-tab')">Transcript</button>
       </div>
       <div id="debrief-tab-panel" class="debrief-tab-panel">
+        <div id="debrief-choice" class="hidden">
+          <p class="debrief-choice-desc">Session complete. Choose transcript source:</p>
+          <div class="debrief-choice-btns">
+            <div class="debrief-choice-opt" onclick="choosePipelineMode('live')">
+              <div class="debrief-choice-title">USE LIVE TRANSCRIPT</div>
+              <div class="debrief-choice-sub">Immediate — uses the streaming transcript</div>
+            </div>
+            <div class="debrief-choice-opt debrief-choice-opt-primary" onclick="choosePipelineMode('retranscribe')">
+              <div class="debrief-choice-title">RE-TRANSCRIBE ↑</div>
+              <div class="debrief-choice-sub">Better accuracy — reprocesses full audio</div>
+            </div>
+          </div>
+        </div>
+        <div id="debrief-progress" class="hidden">
+          <div id="debrief-progress-label" class="debrief-progress-label">Processing...</div>
+          <div class="progress-bar-track">
+            <div id="debrief-progress-fill" class="progress-bar-fill" style="width:0%"></div>
+          </div>
+          <div id="debrief-progress-pct" class="debrief-progress-pct">0%</div>
+        </div>
         <div id="debrief-body"></div>
       </div>
       <div id="transcript-tab-panel" class="debrief-tab-panel hidden">

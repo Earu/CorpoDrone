@@ -9,26 +9,34 @@ import structlog
 log = structlog.get_logger(__name__)
 
 SYSTEM_PROMPT = """\
-You are a meeting assistant. Analyze the conversation transcript below and produce a structured summary in Markdown.
+You are a professional meeting secretary. Your job is to produce a thorough, detailed compte-rendu (meeting report) in Markdown from the transcript below.
 
-Use this exact structure (omit sections that don't apply):
+Cover every topic that was discussed — do not summarize too aggressively. If something was discussed for a while, give it proportional space. Write in full sentences where it adds clarity.
+
+Use this structure (include every section; write "None" if a section truly has no content):
 
 ## Overview
-One or two sentences describing what the meeting was about.
+Two to four sentences describing the purpose, context, and outcome of the meeting.
 
-## Key Topics
-- Bullet list of the main subjects discussed.
+## Participants
+List the speakers identified in the transcript.
+
+## Topics Discussed
+For each major topic, write a sub-heading and a short paragraph or bullet list covering what was said, debated, or concluded on that topic. Be thorough.
 
 ## Decisions Made
-- Bullet list of any decisions or conclusions reached.
+- Every decision or conclusion reached, with enough context to be understood later.
 
-## Action Items
-- Bullet list of tasks or next steps, with owner if mentioned.
+## Action Items & Next Steps
+- Every task, follow-up, or next step mentioned. Include owner and deadline if stated.
+
+## Open Questions
+- Unresolved questions or points that were raised but not concluded.
 
 ## Notable Quotes
-- Any direct quotes worth highlighting (use > blockquote syntax).
+- Direct quotes worth preserving verbatim (use > blockquote syntax).
 
-Be concise and factual. Do not invent information not present in the transcript.\
+Be thorough, factual, and complete. Do not invent information not present in the transcript. Do not truncate or abbreviate.\
 """
 
 
@@ -62,7 +70,15 @@ class Summarizer:
         """Override with a pre-built transcript string (used for post-session re-transcription)."""
         self._transcript_text = text
 
-    def _summarize_now(self) -> str:
+    def _summarize_now(self, progress_cb=None) -> str:
+        """
+        Generate the summary. If progress_cb is provided, streams tokens from Ollama
+        and calls progress_cb(pct) with 0-100 using an asymptotic estimate based on
+        cumulative characters received (approaches 95%, snaps to 100% on completion).
+        Falls back to a single blocking call if streaming is unavailable.
+        """
+        import math
+
         # Prefer the pre-built full-session transcript over live segments
         if self._transcript_text:
             text = self._transcript_text
@@ -79,16 +95,32 @@ class Summarizer:
         try:
             import ollama
             client = ollama.Client(host=self.host)
-            response = client.chat(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": text},
-                ],
-            )
-            msg = response.message if hasattr(response, "message") else response["message"]
-            content = msg.content if hasattr(msg, "content") else msg["content"]
-            content = content.strip()
+            messages = [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": text},
+            ]
+
+            if progress_cb:
+                # Streaming path: report smooth progress as tokens arrive
+                EXPECTED_CHARS = 3000  # detailed compte-rendu — used for asymptote
+                chunks = []
+                char_count = 0
+                for chunk in client.chat(model=self.model, messages=messages, stream=True):
+                    msg = chunk.message if hasattr(chunk, "message") else chunk["message"]
+                    part = msg.content if hasattr(msg, "content") else msg["content"]
+                    if part:
+                        chunks.append(part)
+                        char_count += len(part)
+                        pct = min(95, (1 - math.exp(-char_count / EXPECTED_CHARS)) * 100)
+                        progress_cb(int(pct))
+                progress_cb(100)
+                content = "".join(chunks).strip()
+            else:
+                response = client.chat(model=self.model, messages=messages)
+                msg = response.message if hasattr(response, "message") else response["message"]
+                content = msg.content if hasattr(msg, "content") else msg["content"]
+                content = content.strip()
+
             # Strip ```markdown ... ``` or ``` ... ``` wrappers some models add
             if content.startswith("```"):
                 lines = content.splitlines()

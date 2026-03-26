@@ -234,31 +234,65 @@ class Pipeline:
             with self._segments_lock:
                 self._segments.append(msg)
 
-    def _build_final_transcript(self) -> str:
+    def _wait_for_mode(self, timeout: float = 30.0) -> str:
         """
-        Re-transcribes the full session audio (mic + loopback separately) using a
-        better Whisper model, then interleaves results chronologically.
+        Poll the .pipeline_mode file written by Tauri until it appears or timeout.
+        Deletes the file after reading. Defaults to 'retranscribe'.
+        """
+        mode_file = ".pipeline_mode"
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if os.path.exists(mode_file):
+                try:
+                    mode = open(mode_file).read().strip()
+                    os.remove(mode_file)
+                    log.info("pipeline_mode_received", mode=mode)
+                    return mode if mode in ("retranscribe", "live") else "retranscribe"
+                except Exception:
+                    pass
+            time.sleep(0.5)
+        log.info("pipeline_mode_timeout_defaulting_to_retranscribe")
+        return "retranscribe"
+
+    def _build_final_transcript_with_progress(self):
+        """
+        Re-transcribes the full session audio (mic + loopback separately) using the
+        same transcriber already loaded for live transcription (no extra model load).
+        Emits progress events during processing.
+        Returns (transcript_text, segments) where segments = [{speaker, text, start_us}].
         Falls back to the live-segment transcript on any failure.
         """
-        summarize_model = getattr(self.cfg, "summarize_model", self.cfg.whisper_model)
-        log.info("final_transcription_starting", model=summarize_model)
+        log.info("final_transcription_starting", model=self.cfg.whisper_model)
 
-        # Load a fresh transcriber for the summarize model (may differ from streaming model)
-        try:
-            summary_tx = Transcriber(summarize_model, self.cfg.whisper_device, self.cfg.whisper_compute_type)
-        except Exception as e:
-            log.error("summary_transcriber_load_failed", error=str(e))
-            return self._fallback_transcript()
+        self.writer.send({"type": "progress", "stage": "retranscribe", "pct": 0, "label": "Starting re-transcription…"})
 
+        sources = [(SOURCE_MIC, "You"), (SOURCE_LOOPBACK, "Remote")]
         result_segs = []
-        for source_tag, speaker_label in [(SOURCE_MIC, "You"), (SOURCE_LOOPBACK, "Remote")]:
+
+        for i, (source_tag, speaker_label) in enumerate(sources):
+            # Each source occupies half of the 0-100 retranscribe range
+            range_start = i * 50
+            range_end = range_start + 50
+
+            self.writer.send({"type": "progress", "stage": "retranscribe",
+                              "pct": range_start, "label": f"Transcribing {speaker_label}…"})
             audio, base_us = self.session_recorder.get_audio(source_tag)
             if audio is None or len(audio) < SAMPLE_RATE:
+                self.writer.send({"type": "progress", "stage": "retranscribe",
+                                  "pct": range_end, "label": f"{speaker_label} — no audio"})
                 continue
             log.info("transcribing_source", source=speaker_label,
                      seconds=round(len(audio) / SAMPLE_RATE))
+
+            def make_cb(rs, re, lbl):
+                def cb(seg_pct):
+                    overall = rs + (re - rs) * seg_pct / 100
+                    self.writer.send({"type": "progress", "stage": "retranscribe",
+                                      "pct": int(overall), "label": f"Transcribing {lbl}…"})
+                return cb
+
             try:
-                segs = summary_tx.transcribe(audio)
+                segs = self.transcriber.transcribe_with_progress(audio, make_cb(range_start, range_end, speaker_label))
                 for seg in segs:
                     text = seg.get("text", "").strip()
                     if text:
@@ -266,12 +300,20 @@ class Pipeline:
                         result_segs.append((abs_us, speaker_label, text))
             except Exception as e:
                 log.error("final_transcription_failed", source=speaker_label, error=str(e))
+                self.writer.send({"type": "progress", "stage": "retranscribe",
+                                  "pct": range_end, "label": f"{speaker_label} — failed"})
+
+        self.writer.send({"type": "progress", "stage": "retranscribe", "pct": 95, "label": "Sorting segments…"})
 
         if not result_segs:
-            return self._fallback_transcript()
+            return self._fallback_transcript(), []
 
         result_segs.sort(key=lambda x: x[0])
-        return "\n".join(f"{spk}: {text}" for _, spk, text in result_segs)
+        transcript_text = "\n".join(f"{spk}: {text}" for _, spk, text in result_segs)
+        transcript_segs = [{"speaker": spk, "text": text, "start_us": us} for us, spk, text in result_segs]
+
+        self.writer.send({"type": "progress", "stage": "retranscribe", "pct": 100, "label": "Re-transcription complete"})
+        return transcript_text, transcript_segs
 
     def _fallback_transcript(self) -> str:
         with self._segments_lock:
@@ -303,10 +345,12 @@ class Pipeline:
                     break
 
                 if chunk.source == SOURCE_MIC:
-                    self.mic_stream.add(chunk)
+                    if not os.path.exists(".mic_muted"):
+                        self.mic_stream.add(chunk)
+                        self.session_recorder.add(chunk)
                 else:
                     self.loop_stream.add(chunk)
-                self.session_recorder.add(chunk)
+                    self.session_recorder.add(chunk)
 
                 self._process_stream(self.mic_stream, SOURCE_MIC)
                 self._process_stream(self.loop_stream, SOURCE_LOOPBACK)
@@ -314,12 +358,30 @@ class Pipeline:
         except KeyboardInterrupt:
             log.info("pipeline_interrupted")
         finally:
+            self.writer.send({"type": "status", "state": "session_ended"})
+
+            mode = self._wait_for_mode(timeout=30.0)
+            transcript_segs = []
+            if mode == "retranscribe":
+                transcript_text, transcript_segs = self._build_final_transcript_with_progress()
+            else:
+                log.info("using_live_transcript")
+                transcript_text = self._fallback_transcript()
+
             if self.summarizer:
                 log.info("generating_final_summary")
-                transcript = self._build_final_transcript()
-                self.summarizer.set_transcript_text(transcript)
-                final = self.summarizer._summarize_now()
-                self.writer.send({"type": "final_summary", "text": final or ""})
+                self.writer.send({"type": "progress", "stage": "summarize", "pct": 0, "label": "Generating debrief…"})
+                self.summarizer.set_transcript_text(transcript_text)
+
+                def summarize_progress_cb(pct):
+                    self.writer.send({"type": "progress", "stage": "summarize",
+                                      "pct": pct, "label": "Generating debrief…"})
+
+                final = self.summarizer._summarize_now(progress_cb=summarize_progress_cb)
+                self.writer.send({"type": "final_summary", "text": final or "", "transcript": transcript_segs})
+            else:
+                self.writer.send({"type": "final_summary", "text": "", "transcript": transcript_segs})
+
             self.writer.send({"type": "status", "state": "stopped"})
             self.writer.close()
             log.info("pipeline_stopped")

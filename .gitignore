@@ -14,3 +14,5 @@ app/gen/
 
 # Runtime state
 speakers.json
+
+.pipeline_mode
