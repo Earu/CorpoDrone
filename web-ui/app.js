@@ -48,8 +48,8 @@ function handleMessage(msg) {
     case 'segment':
       addSegment(msg);
       break;
-    case 'summary':
-      updateSummary(msg.text);
+    case 'final_summary':
+      showSummaryModal(msg.text);
       break;
     case 'speaker_update':
       updateSpeakerName(msg.speaker_id, msg.name);
@@ -109,10 +109,41 @@ function clearTranscript() {
   document.getElementById('transcript').innerHTML = '';
 }
 
-// ---- Summary ----
-function updateSummary(text) {
-  const el = document.getElementById('summary');
-  el.textContent = text;
+// ---- Summary modal ----
+let _summaryText = '';
+
+function showSummaryLoading() {
+  _summaryText = '';
+  document.getElementById('btn-copy').style.display = 'none';
+  const body = document.getElementById('modal-body');
+  body.innerHTML = '<div class="modal-loader"><div class="spinner"></div><span>Generating summary…</span></div>';
+  document.getElementById('modal-overlay').classList.remove('hidden');
+}
+
+function showSummaryModal(text) {
+  _summaryText = text;
+  const body = document.getElementById('modal-body');
+  body.innerHTML = text
+    ? marked.parse(text)
+    : '<p style="color:var(--text-muted)">No summary available (conversation too short or Ollama unavailable).</p>';
+  document.getElementById('btn-copy').style.display = text ? '' : 'none';
+  document.getElementById('modal-overlay').classList.remove('hidden');
+}
+
+function closeModal() {
+  document.getElementById('modal-overlay').classList.add('hidden');
+}
+
+async function copySummary() {
+  if (!_summaryText) return;
+  try {
+    await navigator.clipboard.writeText(_summaryText);
+    const btn = document.getElementById('btn-copy');
+    btn.textContent = 'Copied!';
+    setTimeout(() => { btn.textContent = 'Copy'; }, 2000);
+  } catch (e) {
+    console.error('copy failed', e);
+  }
 }
 
 // ---- Speakers ----
@@ -196,6 +227,7 @@ async function stopRecording() {
       return;
     }
     setRecordingState(false);
+    showSummaryLoading();
   } catch (e) {
     alert(`Stop error: ${e}`);
   }

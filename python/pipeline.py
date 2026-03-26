@@ -126,12 +126,11 @@ class Pipeline:
         self.diarizer = Diarizer(cfg.hf_token, cfg.min_speakers, cfg.max_speakers) if cfg.diarize else None
         self.tracker = SpeakerTracker(cfg.speakers_file)
 
-        # When diarization is unavailable, use source (mic/loopback) as speaker identity
-        self._use_source_as_speaker = not (self.diarizer and self.diarizer.available)
-        if self._use_source_as_speaker:
-            log.info("diarization_unavailable_using_source_as_speaker")
-            self.tracker.set_name("spk_mic", "You")
-            self.tracker.set_name("spk_loopback", "Remote")
+        # Mic always = "You", loopback always = "Remote" (source-based identity).
+        # If pyannote is available, it's used to split MULTIPLE remote speakers on loopback,
+        # but mic vs loopback distinction is always source-driven.
+        self.tracker.set_name("spk_mic", "You")
+        self.tracker.set_name("spk_loopback", "Remote")
 
         self._segments: List[Dict[str, Any]] = []
         self._segments_lock = threading.Lock()
@@ -140,10 +139,8 @@ class Pipeline:
             self.summarizer = Summarizer(
                 model=cfg.ollama_model,
                 host=cfg.ollama_host,
-                interval_seconds=cfg.summarize_interval_seconds,
-                on_summary=self._on_summary,
             )
-            self.summarizer.start()
+            # Do NOT start the background thread — summary is generated once on stop only.
         else:
             self.summarizer = None
 
@@ -152,10 +149,6 @@ class Pipeline:
 
         self.mic_stream = AudioStream(cfg.window_seconds, cfg.step_seconds)
         self.loop_stream = AudioStream(cfg.window_seconds, cfg.step_seconds)
-
-    def _on_summary(self, text: str):
-        log.info("summary_generated", chars=len(text))
-        self.writer.send({"type": "summary", "text": text})
 
     def _process_stream(self, stream: AudioStream, source_tag: int):
         if not stream.has_audio or not stream.ready():
@@ -183,15 +176,23 @@ class Pipeline:
             if not text:
                 continue
 
-            # Speaker assignment
-            if self._use_source_as_speaker:
-                stable_id = "spk_mic" if source_tag == SOURCE_MIC else "spk_loopback"
-            else:
+            # Speaker assignment:
+            # Mic = always "You". Loopback = "Remote" or diarized remote speakers.
+            if source_tag == SOURCE_MIC:
+                stable_id = "spk_mic"
+            elif self.diarizer and self.diarizer.available:
                 pyannote_label = seg.get("speaker", "SPEAKER_00")
+                # Prefix with "loop_" so loopback labels never collide with mic labels
                 seg_s = int(seg["start"] * SAMPLE_RATE)
                 seg_e = int(seg["end"] * SAMPLE_RATE)
                 seg_audio = audio[seg_s:seg_e] if seg_e <= len(audio) else None
-                stable_id = self.tracker.resolve(pyannote_label, seg_audio)
+                stable_id = self.tracker.resolve(f"loop_{pyannote_label}", seg_audio)
+                if self.tracker.get_name(stable_id) == stable_id:
+                    remote_n = sum(1 for s in self.tracker._speakers
+                                   if s.startswith("spk_") and s not in ("spk_mic", "spk_loopback"))
+                    self.tracker.set_name(stable_id, f"Remote {remote_n + 1}")
+            else:
+                stable_id = "spk_loopback"
 
             speaker_name = self.tracker.get_name(stable_id)
 
@@ -209,8 +210,6 @@ class Pipeline:
             self.writer.send(msg)
             with self._segments_lock:
                 self._segments.append(msg)
-                if self.summarizer:
-                    self.summarizer.update_segments(list(self._segments))
 
     def run(self):
         log.info("pipeline_running")
@@ -220,17 +219,20 @@ class Pipeline:
                 try:
                     chunk = self.receiver.queue.get(timeout=0.1)
                 except queue.Empty:
-                    chunk = None
+                    # No data yet — still process buffered audio
+                    self._process_stream(self.mic_stream, SOURCE_MIC)
+                    self._process_stream(self.loop_stream, SOURCE_LOOPBACK)
+                    continue
 
-                if chunk is None and not self.receiver.is_alive():
-                    log.info("receiver_stopped_draining")
+                if chunk is None:
+                    # Sentinel — audio-capture stopped (clean or killed)
+                    log.info("end_of_stream")
                     break
 
-                if chunk is not None:
-                    if chunk.source == SOURCE_MIC:
-                        self.mic_stream.add(chunk)
-                    else:
-                        self.loop_stream.add(chunk)
+                if chunk.source == SOURCE_MIC:
+                    self.mic_stream.add(chunk)
+                else:
+                    self.loop_stream.add(chunk)
 
                 self._process_stream(self.mic_stream, SOURCE_MIC)
                 self._process_stream(self.loop_stream, SOURCE_LOOPBACK)
@@ -239,7 +241,12 @@ class Pipeline:
             log.info("pipeline_interrupted")
         finally:
             if self.summarizer:
-                self.summarizer.stop()
+                log.info("generating_final_summary")
+                with self._segments_lock:
+                    segments_snapshot = list(self._segments)
+                self.summarizer.update_segments(segments_snapshot)
+                final = self.summarizer._summarize_now()
+                self.writer.send({"type": "final_summary", "text": final or ""})
             self.writer.send({"type": "status", "state": "stopped"})
             self.writer.close()
             log.info("pipeline_stopped")

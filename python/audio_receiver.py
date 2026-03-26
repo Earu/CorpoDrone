@@ -8,6 +8,7 @@ Wire format per chunk:
   [4 bytes] num_samples  u32 LE
   [num_samples*4 bytes]  f32 LE PCM @ 16kHz mono
 """
+import ctypes
 import struct
 import threading
 import queue
@@ -18,6 +19,13 @@ import numpy as np
 import structlog
 
 log = structlog.get_logger(__name__)
+
+_kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+
+
+def _wait_pipe(path: str, timeout_ms: int = 5000) -> bool:
+    """Returns True if the pipe becomes available within timeout_ms."""
+    return bool(_kernel32.WaitNamedPipeW(path, timeout_ms))
 
 SOURCE_MIC = 0x01
 SOURCE_LOOPBACK = 0x02
@@ -45,22 +53,35 @@ class AudioReceiver(threading.Thread):
         self.pipe_path = pipe_path
         self.queue: queue.Queue[Optional[AudioChunk]] = queue.Queue(maxsize=maxsize)
         self._stop_event = threading.Event()
+        self._connected_once = False  # True once we successfully open the pipe
 
     def stop(self):
         self._stop_event.set()
 
     def run(self):
         while not self._stop_event.is_set():
+            if not _wait_pipe(self.pipe_path, 5000):
+                if self._connected_once:
+                    # Was recording, pipe is gone — signal pipeline to stop
+                    log.info("audio_pipe_gone_signalling_stop")
+                    self.queue.put(None)
+                    return
+                log.debug("audio_pipe_not_ready", path=self.pipe_path)
+                continue
             try:
                 self._connect_and_read()
             except Exception as e:
                 log.error("audio_receiver_error", error=str(e))
+                if self._connected_once:
+                    # Unexpected error after we were connected — stop cleanly
+                    self.queue.put(None)
+                    return
                 time.sleep(1.0)
 
     def _connect_and_read(self):
         log.info("opening_audio_pipe", path=self.pipe_path)
-        # On Windows, named pipes are opened like regular files
         with open(self.pipe_path, "rb") as pipe:
+            self._connected_once = True
             log.info("audio_pipe_connected")
             while not self._stop_event.is_set():
                 # Read 4-byte length prefix

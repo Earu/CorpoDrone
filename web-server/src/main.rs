@@ -119,6 +119,15 @@ async fn main() -> Result<()> {
     let bind = args.bind.clone();
 
     // Also kill subprocesses when the server finishes (e.g. closed programmatically)
+    // Open the UI in the default browser once the server is bound
+    let url = format!("http://{}", bind);
+    tokio::spawn(async move {
+        // Small delay to ensure the listener is ready before the browser hits it
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        let _ = std::process::Command::new("cmd").args(["/c", "start", &url]).spawn();
+        info!("Opened browser at {url}");
+    });
+
     let server = HttpServer::new(move || {
         App::new()
             .app_data(hub_data.clone())

@@ -14,7 +14,7 @@ import structlog
 
 log = structlog.get_logger(__name__)
 
-SIMILARITY_THRESHOLD = 0.75
+SIMILARITY_THRESHOLD = 0.85
 
 
 def cosine_sim(a: np.ndarray, b: np.ndarray) -> float:
@@ -33,6 +33,8 @@ class SpeakerTracker:
         self._load()
         self._encoder = None
         self._init_encoder()
+        # per-session mapping: pyannote_label -> stable_id (instance-level, not class-level)
+        self._session_map: Dict[str, str] = {}
 
     def _init_encoder(self):
         try:
@@ -53,8 +55,9 @@ class SpeakerTracker:
                         "name": entry.get("name", sid),
                         "embedding": None,
                     }
-                    idx = int(sid.replace("spk_", ""))
-                    self._next_id = max(self._next_id, idx + 1)
+                    suffix = sid.replace("spk_", "")
+                    if suffix.isdigit():
+                        self._next_id = max(self._next_id, int(suffix) + 1)
                 log.info("speakers_loaded", count=len(self._speakers))
             except Exception as e:
                 log.warning("speakers_load_failed", error=str(e))
@@ -109,9 +112,6 @@ class SpeakerTracker:
         self._save()
         log.info("new_speaker", id=sid)
         return sid
-
-    # session-level mapping: pyannote_label -> stable_id
-    _session_map: Dict[str, str] = {}
 
     def resolve(
         self,
