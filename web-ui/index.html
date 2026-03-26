@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CorpoDrone</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <div id="app">
+    <header>
+      <h1>CorpoDrone</h1>
+      <div id="controls">
+        <button id="btn-start" onclick="startRecording()">Start</button>
+        <button id="btn-stop" onclick="stopRecording()" disabled>Stop</button>
+        <span id="status-badge" class="badge badge-idle">Idle</span>
+        <span id="ws-badge" class="badge badge-disconnected">WS</span>
+      </div>
+    </header>
+
+    <div id="main">
+      <section id="transcript-panel">
+        <div class="panel-header">
+          <h2>Live Transcript</h2>
+          <button onclick="clearTranscript()" class="btn-sm">Clear</button>
+        </div>
+        <div id="transcript" class="scrollable"></div>
+      </section>
+
+      <aside id="sidebar">
+        <section id="summary-panel">
+          <h2>Summary</h2>
+          <div id="summary" class="scrollable">Waiting for content...</div>
+        </section>
+
+        <section id="speakers-panel">
+          <h2>Speakers</h2>
+          <div id="speakers-list"></div>
+        </section>
+      </aside>
+    </div>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>
