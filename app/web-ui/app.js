@@ -3,8 +3,9 @@
 // ---- State ----
 const state = {
   recording: false,
+  muted: false,
   speakers: {}, // id -> { name, color }
-  segments: [], // ordered transcript segments
+  segments: [], // ordered live transcript segments
   autoScroll: true,
 };
 
@@ -30,16 +31,21 @@ function handleMessage(msg) {
       addSegment(msg);
       break;
     case 'final_summary':
-      showDebrief(msg.text);
+      if (currentPage() === 'debrief') showDebrief(msg);
       break;
     case 'speaker_update':
       updateSpeakerName(msg.speaker_id, msg.name);
+      break;
+    case 'progress':
+      if (currentPage() === 'debrief') handleProgress(msg);
       break;
     case 'status':
       if (msg.state === 'ready') {
         setPipelineReady(true);
       } else if (msg.state === 'recording') {
         setRecordingState(true);
+      } else if (msg.state === 'session_ended') {
+        if (currentPage() === 'debrief') showChoiceUI();
       } else if (msg.state === 'stopped') {
         setRecordingState(false);
       }
@@ -53,7 +59,6 @@ function handleMessage(msg) {
 function addSegment(msg) {
   const existing = state.segments.find(s => s.id === msg.id);
   if (existing) {
-    // Update existing (partial transcription updated)
     existing.text = msg.text;
     const el = document.getElementById(`seg-${msg.id}`);
     if (el) el.querySelector('.segment-text').textContent = msg.text;
@@ -83,7 +88,6 @@ function addSegment(msg) {
   `;
   container.appendChild(el);
 
-  // Remove 'new' glow after animation
   setTimeout(() => el.classList.remove('new'), 500);
 
   if (state.autoScroll) {
@@ -99,34 +103,68 @@ function clearTranscript() {
 // ---- Debrief page ----
 let _summaryText = '';
 
-function showDebriefLoading() {
-  _summaryText = '';
+function showChoiceUI() {
+  document.getElementById('debrief-choice').classList.remove('hidden');
+  document.getElementById('debrief-progress').classList.add('hidden');
+  document.getElementById('debrief-body').innerHTML = '';
   document.getElementById('btn-copy').style.display = 'none';
-  document.getElementById('debrief-body').innerHTML =
-    '<div class="debrief-loader">' +
-    '<div class="debrief-loader-row"><div class="spinner"></div><span>Re-transcribing session audio…</span></div>' +
-    '<div class="debrief-loader-sub">Generating debrief — this may take a moment</div>' +
-    '</div>';
-  // Populate transcript tab now (segments are complete at this point)
-  populateTranscriptTab();
-  showPage('debrief');
-  switchTab('debrief-tab');
+  // Transcript tab stays empty until we have the final transcript
+  const el = document.getElementById('transcript-tab-body');
+  if (el) el.innerHTML = '<p class="tab-empty">Waiting for transcript…</p>';
 }
 
-function populateTranscriptTab() {
+async function choosePipelineMode(mode) {
+  document.getElementById('debrief-choice').classList.add('hidden');
+  document.getElementById('debrief-progress').classList.remove('hidden');
+  setOverallProgress(0, mode === 'retranscribe' ? 'Starting re-transcription…' : 'Building summary…');
+  try {
+    await invoke('set_pipeline_mode', { mode });
+  } catch (e) {
+    console.error('set_pipeline_mode failed', e);
+  }
+}
+
+function handleProgress(msg) {
+  // Map two-stage pipeline onto a single 0-100 bar:
+  // retranscribe: 0-60, summarize: 60-100 (or 0-100 if no retranscription)
+  let overall;
+  if (msg.stage === 'retranscribe') {
+    overall = Math.round(msg.pct * 0.6);
+  } else {
+    overall = 60 + Math.round(msg.pct * 0.4);
+  }
+  setOverallProgress(overall, msg.label || '');
+}
+
+function setOverallProgress(pct, label) {
+  const fill = document.getElementById('debrief-progress-fill');
+  const pctEl = document.getElementById('debrief-progress-pct');
+  const labelEl = document.getElementById('debrief-progress-label');
+  if (fill) fill.style.width = pct + '%';
+  if (pctEl) pctEl.textContent = pct + '%';
+  if (labelEl) labelEl.textContent = label;
+}
+
+function populateTranscriptTab(segments) {
   const el = document.getElementById('transcript-tab-body');
   if (!el) return;
-  if (!state.segments.length) {
+  if (!segments || !segments.length) {
     el.innerHTML = '<p class="tab-empty">No transcript recorded.</p>';
     return;
   }
-  el.innerHTML = state.segments.map(seg => {
-    const spk = (state.speakers[seg.speaker_id] || {}).name || seg.speaker_name || seg.speaker_id;
-    const color = (state.speakers[seg.speaker_id] || {}).color || '#888';
-    const time = formatTime(seg.start_us);
+  // Segments may come from live state (have speaker_id) or re-transcribed (have speaker string)
+  el.innerHTML = segments.map(seg => {
+    const isLive = seg.speaker_id !== undefined;
+    const spkName = isLive
+      ? ((state.speakers[seg.speaker_id] || {}).name || seg.speaker_name || seg.speaker_id)
+      : (seg.speaker || 'Unknown');
+    const color = isLive
+      ? ((state.speakers[seg.speaker_id] || {}).color || '#888')
+      : nameToColor(spkName);
+    const time = formatTime(seg.start_us || 0);
     return `<div class="tx-seg">
       <div class="tx-seg-header">
-        <span class="tx-spk" style="color:${color}">${escHtml(spk)}</span>
+        <span class="tx-spk" style="color:${color}">${escHtml(spkName)}</span>
         <span class="tx-time">${time}</span>
       </div>
       <div class="tx-text">${escHtml(seg.text)}</div>
@@ -134,30 +172,55 @@ function populateTranscriptTab() {
   }).join('');
 }
 
+function nameToColor(name) {
+  // Deterministic color from name string
+  let hash = 0;
+  for (let i = 0; i < name.length; i++) hash = (hash * 31 + name.charCodeAt(i)) & 0xffffffff;
+  return SPEAKER_COLORS[Math.abs(hash) % SPEAKER_COLORS.length];
+}
+
 function switchTab(tabId) {
   document.querySelectorAll('.debrief-tab').forEach(t => t.classList.remove('active'));
   document.querySelectorAll('.debrief-tab-panel').forEach(p => p.classList.add('hidden'));
   document.getElementById(tabId).classList.add('active');
   document.getElementById(tabId + '-panel').classList.remove('hidden');
-  // Copy button only relevant on debrief tab
   document.getElementById('btn-copy').style.display =
     (tabId === 'debrief-tab' && _summaryText) ? '' : 'none';
 }
 
-function showDebrief(text) {
+function showDebrief(msg) {
+  const text = typeof msg === 'string' ? msg : (msg.text || '');
+  const transcriptSegs = (typeof msg === 'object' && msg.transcript) ? msg.transcript : null;
+
   _summaryText = text;
+  document.getElementById('debrief-choice').classList.add('hidden');
+  document.getElementById('debrief-progress').classList.add('hidden');
   document.getElementById('debrief-body').innerHTML = text
     ? marked.parse(text)
     : '<p class="tab-empty">No debrief available — conversation too short or Ollama unreachable.</p>';
-  // Show copy button and switch to debrief tab
+
+  // Populate transcript tab: prefer re-transcribed segments, fall back to live segments
+  if (transcriptSegs && transcriptSegs.length > 0) {
+    populateTranscriptTab(transcriptSegs);
+  } else {
+    populateTranscriptTab(state.segments);
+  }
+
   switchTab('debrief-tab');
 }
 
 function newSession() {
   state.segments = [];
   state.speakers = {};
+  _summaryText = '';
+  setMuteState(false);
   document.getElementById('transcript').innerHTML = '';
   document.getElementById('speakers-list').innerHTML = '';
+  document.getElementById('debrief-choice').classList.add('hidden');
+  document.getElementById('debrief-progress').classList.add('hidden');
+  document.getElementById('debrief-body').innerHTML = '';
+  const txBody = document.getElementById('transcript-tab-body');
+  if (txBody) txBody.innerHTML = '';
   showPage('landing');
 }
 
@@ -204,11 +267,9 @@ function updateSpeakerName(id, name) {
   ensureSpeaker(id);
   state.speakers[id].name = name;
 
-  // Update input
   const input = document.querySelector(`#spk-row-${id} input`);
   if (input && document.activeElement !== input) input.value = name;
 
-  // Update all transcript segments for this speaker
   document.querySelectorAll(`[id^="seg-"]`).forEach(el => {
     const seg = state.segments.find(s => `seg-${s.id}` === el.id);
     if (seg && seg.speaker_id === id) {
@@ -227,6 +288,24 @@ async function renameSpeaker(id, name) {
 }
 
 // ---- Controls ----
+async function toggleMute() {
+  const next = !state.muted;
+  try {
+    await invoke('set_mute', { muted: next });
+    setMuteState(next);
+  } catch (e) {
+    console.error('set_mute failed', e);
+  }
+}
+
+function setMuteState(muted) {
+  state.muted = muted;
+  const btn = document.getElementById('btn-mute');
+  if (!btn) return;
+  btn.textContent = muted ? 'MIC MUTED' : 'MIC ON';
+  btn.classList.toggle('muted', muted);
+}
+
 async function startRecording() {
   try {
     await invoke('start_recording');
@@ -240,7 +319,10 @@ async function stopRecording() {
   try {
     await invoke('stop_recording');
     setRecordingState(false);
-    showDebriefLoading();
+    // Navigate to debrief and show choice — pipeline will emit 'session_ended' shortly
+    showPage('debrief');
+    switchTab('debrief-tab');
+    showChoiceUI();
   } catch (e) {
     alert(`Stop error: ${e}`);
   }
@@ -271,7 +353,6 @@ function setRecordingState(recording) {
   if (recording) {
     showPage('workspace');
   } else if (currentPage() === 'workspace') {
-    // Only navigate away from workspace (not from debrief which is already showing)
     showPage('landing');
   }
   const recDot = document.getElementById('rec-dot');
@@ -306,9 +387,8 @@ document.addEventListener('DOMContentLoaded', () => {
     state.autoScroll = atBottom;
   });
 
-  // Fetch initial status
   invoke('get_status')
-    .then(d => setRecordingState(d.recording))
+    .then(d => { setRecordingState(d.recording); setMuteState(d.muted ?? false); })
     .catch(() => {});
 
   connectTauri();

@@ -64,6 +64,55 @@ class Transcriber:
             return self._transcribe_whisperx(audio)
         return self._transcribe_faster(audio)
 
+    def transcribe_with_progress(self, audio: np.ndarray, progress_cb=None) -> List[Dict[str, Any]]:
+        """
+        Like transcribe() but calls progress_cb(pct) with 0-100 as processing advances.
+        For faster-whisper: progress tracks segment.end vs total audio duration (smooth).
+        For whisperx: checkpoints at 0, ~60 (after transcribe), 100 (after align).
+        """
+        if len(audio) < SAMPLE_RATE * 0.5:
+            return []
+
+        def _cb(pct):
+            if progress_cb:
+                progress_cb(pct)
+
+        if self._use_whisperx:
+            wx = self._whisperx
+            _cb(0)
+            result = self._model.transcribe(audio, batch_size=16)
+            _cb(60)
+            if not result.get("segments"):
+                _cb(100)
+                return []
+            aligned = wx.align(
+                result["segments"],
+                self._align_model,
+                self._align_metadata,
+                audio,
+                self.device,
+                return_char_alignments=False,
+            )
+            _cb(100)
+            return aligned.get("segments", [])
+
+        # faster-whisper: iterate the lazy generator for real per-segment progress
+        total_s = len(audio) / SAMPLE_RATE
+        segments_iter, _ = self._model.transcribe(
+            audio, beam_size=5, word_timestamps=True, language="en",
+        )
+        segments = []
+        for seg in segments_iter:
+            words = []
+            if seg.words:
+                for w in seg.words:
+                    words.append({"word": w.word, "start": w.start, "end": w.end})
+            segments.append({"start": seg.start, "end": seg.end, "text": seg.text.strip(), "words": words})
+            if total_s > 0:
+                _cb(min(99, seg.end / total_s * 100))
+        _cb(100)
+        return segments
+
     def _transcribe_whisperx(self, audio: np.ndarray) -> List[Dict[str, Any]]:
         wx = self._whisperx
         result = self._model.transcribe(audio, batch_size=16)
