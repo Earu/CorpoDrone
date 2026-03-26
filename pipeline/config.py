@@ -52,6 +52,7 @@ class Config:
 
     # Summarization (generated once at end of session)
     summarize: bool = True
+    summarize_model: str = "medium"   # Whisper model for final re-transcription (better quality)
     ollama_model: str = "mistral"
     ollama_host: str = "http://localhost:11434"
 

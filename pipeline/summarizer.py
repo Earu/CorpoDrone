@@ -51,20 +51,28 @@ class Summarizer:
         self.model = model
         self.host = host
         self._segments: List[Dict[str, Any]] = []
+        self._transcript_text: str = ""
         self._lock = threading.Lock()
 
     def update_segments(self, segments: List[Dict[str, Any]]):
         with self._lock:
             self._segments = list(segments)
 
+    def set_transcript_text(self, text: str):
+        """Override with a pre-built transcript string (used for post-session re-transcription)."""
+        self._transcript_text = text
+
     def _summarize_now(self) -> str:
-        with self._lock:
-            segments = list(self._segments)
+        # Prefer the pre-built full-session transcript over live segments
+        if self._transcript_text:
+            text = self._transcript_text
+        else:
+            with self._lock:
+                segments = list(self._segments)
+            if not segments:
+                return ""
+            text = _build_transcript_text(segments)
 
-        if not segments:
-            return ""
-
-        text = _build_transcript_text(segments)
         if len(text.strip()) < 50:
             return ""
 

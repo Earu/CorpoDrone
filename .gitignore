@@ -2,10 +2,15 @@ target/
 Cargo.lock
 __pycache__/
 *.pyc
-python/__pycache__/
-python/speakers.json
-python/models/
+pipeline/__pycache__/
+pipeline/models/
 *.egg-info/
 .env
 .venv
 .claude
+
+# Tauri generated files
+app/gen/
+
+# Runtime state
+speakers.json

@@ -22,6 +22,8 @@ step_seconds = 3.0
 
 # Summarization via Ollama (generated once when Stop is pressed)
 summarize = true
+# Whisper model used for the final full-session re-transcription (better quality than streaming)
+summarize_model = "medium"
 ollama_model = "mistral"
 ollama_host = "http://localhost:11434"
 
@@ -32,4 +34,4 @@ transcript_pipe = '\\.\pipe\corpodrone-transcript'
 [server]
 # Python executable — points at the venv
 python_exe = '.venv\Scripts\python.exe'
-python_script = 'python\pipeline.py'
+python_script = 'pipeline\pipeline.py'

@@ -1,0 +1,62 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust nightly
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version "^2" --locked
+
+      - name: Build audio-capture
+        run: cargo build --release -p audio-capture
+
+      - name: Build Tauri app
+        run: cargo build --release -p corpo-drone
+
+      - name: Package zip
+        shell: pwsh
+        run: |
+          $name = "CorpoDrone-windows-x64"
+          New-Item -ItemType Directory -Path $name | Out-Null
+
+          Copy-Item target\release\corpo-drone.exe  $name\
+          Copy-Item target\release\audio-capture.exe $name\
+          Copy-Item config.toml                      $name\
+          Copy-Item setup.ps1                        $name\
+          Copy-Item .env.example                     $name\
+          Copy-Item -Recurse pipeline                $name\
+
+          Compress-Archive -Path $name -DestinationPath "$name.zip"
+          Write-Host "Created $name.zip"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: CorpoDrone-windows-x64
+          path: CorpoDrone-windows-x64.zip
+          retention-days: 30
+
+      # On tagged releases (v*), also create a GitHub Release with the zip attached
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: CorpoDrone-windows-x64.zip
+          generate_release_notes: true

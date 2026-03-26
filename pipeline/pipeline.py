@@ -114,17 +114,37 @@ class AudioStream:
         return self._total >= SAMPLE_RATE // 2  # at least 0.5s
 
 
+class SessionRecorder:
+    """Accumulates all raw audio chunks for end-of-session high-quality re-transcription."""
+
+    def __init__(self):
+        self._chunks: List[AudioChunk] = []
+        self._lock = threading.Lock()
+
+    def add(self, chunk: AudioChunk):
+        with self._lock:
+            self._chunks.append(chunk)
+
+    def get_audio(self, source_tag: int):
+        """Returns (audio_array, base_timestamp_us) for the given source, or (None, 0)."""
+        with self._lock:
+            chunks = [c for c in self._chunks if c.source == source_tag]
+        if not chunks:
+            return None, 0
+        return np.concatenate([c.samples for c in chunks]), chunks[0].timestamp_us
+
+
 class Pipeline:
     def __init__(self, cfg: Config):
         self.cfg = cfg
 
         log.info("init_pipeline")
         self.writer = TranscriptWriter(cfg.transcript_pipe)
-        self.writer.send({"type": "status", "state": "ready"})
 
         self.transcriber = Transcriber(cfg.whisper_model, cfg.whisper_device, cfg.whisper_compute_type)
         self.diarizer = Diarizer(cfg.hf_token, cfg.min_speakers, cfg.max_speakers) if cfg.diarize else None
         self.tracker = SpeakerTracker(cfg.speakers_file)
+        self.session_recorder = SessionRecorder()
 
         # Mic always = "You", loopback always = "Remote" (source-based identity).
         # If pyannote is available, it's used to split MULTIPLE remote speakers on loopback,
@@ -149,6 +169,9 @@ class Pipeline:
 
         self.mic_stream = AudioStream(cfg.window_seconds, cfg.step_seconds)
         self.loop_stream = AudioStream(cfg.window_seconds, cfg.step_seconds)
+
+        # Signal the frontend that all models are loaded and we're ready to record.
+        self.writer.send({"type": "status", "state": "ready"})
 
     def _process_stream(self, stream: AudioStream, source_tag: int):
         if not stream.has_audio or not stream.ready():
@@ -211,6 +234,56 @@ class Pipeline:
             with self._segments_lock:
                 self._segments.append(msg)
 
+    def _build_final_transcript(self) -> str:
+        """
+        Re-transcribes the full session audio (mic + loopback separately) using a
+        better Whisper model, then interleaves results chronologically.
+        Falls back to the live-segment transcript on any failure.
+        """
+        summarize_model = getattr(self.cfg, "summarize_model", self.cfg.whisper_model)
+        log.info("final_transcription_starting", model=summarize_model)
+
+        # Load a fresh transcriber for the summarize model (may differ from streaming model)
+        try:
+            summary_tx = Transcriber(summarize_model, self.cfg.whisper_device, self.cfg.whisper_compute_type)
+        except Exception as e:
+            log.error("summary_transcriber_load_failed", error=str(e))
+            return self._fallback_transcript()
+
+        result_segs = []
+        for source_tag, speaker_label in [(SOURCE_MIC, "You"), (SOURCE_LOOPBACK, "Remote")]:
+            audio, base_us = self.session_recorder.get_audio(source_tag)
+            if audio is None or len(audio) < SAMPLE_RATE:
+                continue
+            log.info("transcribing_source", source=speaker_label,
+                     seconds=round(len(audio) / SAMPLE_RATE))
+            try:
+                segs = summary_tx.transcribe(audio)
+                for seg in segs:
+                    text = seg.get("text", "").strip()
+                    if text:
+                        abs_us = base_us + int(seg["start"] * 1_000_000)
+                        result_segs.append((abs_us, speaker_label, text))
+            except Exception as e:
+                log.error("final_transcription_failed", source=speaker_label, error=str(e))
+
+        if not result_segs:
+            return self._fallback_transcript()
+
+        result_segs.sort(key=lambda x: x[0])
+        return "\n".join(f"{spk}: {text}" for _, spk, text in result_segs)
+
+    def _fallback_transcript(self) -> str:
+        with self._segments_lock:
+            segs = list(self._segments)
+        lines = []
+        for seg in segs:
+            spk = seg.get("speaker_name", "Unknown")
+            text = seg.get("text", "").strip()
+            if text:
+                lines.append(f"{spk}: {text}")
+        return "\n".join(lines)
+
     def run(self):
         log.info("pipeline_running")
 
@@ -233,6 +306,7 @@ class Pipeline:
                     self.mic_stream.add(chunk)
                 else:
                     self.loop_stream.add(chunk)
+                self.session_recorder.add(chunk)
 
                 self._process_stream(self.mic_stream, SOURCE_MIC)
                 self._process_stream(self.loop_stream, SOURCE_LOOPBACK)
@@ -242,9 +316,8 @@ class Pipeline:
         finally:
             if self.summarizer:
                 log.info("generating_final_summary")
-                with self._segments_lock:
-                    segments_snapshot = list(self._segments)
-                self.summarizer.update_segments(segments_snapshot)
+                transcript = self._build_final_transcript()
+                self.summarizer.set_transcript_text(transcript)
                 final = self.summarizer._summarize_now()
                 self.writer.send({"type": "final_summary", "text": final or ""})
             self.writer.send({"type": "status", "state": "stopped"})
