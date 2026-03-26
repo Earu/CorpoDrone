@@ -29,6 +29,8 @@ from diarizer import Diarizer
 from speaker_tracker import SpeakerTracker
 from summarizer import Summarizer
 from transcript_writer import TranscriptWriter
+from embedding_extractor import EmbeddingExtractor
+from speaker_database import SpeakerDatabase
 
 log = structlog.get_logger(__name__)
 
@@ -143,7 +145,9 @@ class Pipeline:
 
         self.transcriber = Transcriber(cfg.whisper_model, cfg.whisper_device, cfg.whisper_compute_type)
         self.diarizer = Diarizer(cfg.hf_token, cfg.min_speakers, cfg.max_speakers) if cfg.diarize else None
-        self.tracker = SpeakerTracker(cfg.speakers_file)
+        self._speaker_db = SpeakerDatabase(cfg.speaker_db_file, cfg.speaker_identify_threshold)
+        self._embedder = EmbeddingExtractor(cfg.whisper_device) if cfg.speaker_enroll else None
+        self.tracker = SpeakerTracker(cfg.speakers_file, encoder=self._embedder)
         self.session_recorder = SessionRecorder()
 
         # Mic always = "You", loopback always = "Remote" (source-based identity).
@@ -154,6 +158,14 @@ class Pipeline:
 
         self._segments: List[Dict[str, Any]] = []
         self._segments_lock = threading.Lock()
+
+        # Per-speaker clip accumulator: stable_id → (accumulating_samples, finalized_clips)
+        # Clips are ~3s audio arrays, max 4 per speaker, used for enrollment at session end
+        self._clip_accum: Dict[str, np.ndarray] = {}   # ongoing accumulation
+        self._clip_store: Dict[str, List[np.ndarray]] = {}  # finalized clips (≥3s)
+        self._MAX_CLIPS = 4
+        self._CLIP_TARGET_S = 3.0
+        self._identified_in_session: set = set()  # stable_ids already checked against DB live
 
         if cfg.summarize:
             self.summarizer = Summarizer(
@@ -205,7 +217,6 @@ class Pipeline:
                 stable_id = "spk_mic"
             elif self.diarizer and self.diarizer.available:
                 pyannote_label = seg.get("speaker", "SPEAKER_00")
-                # Prefix with "loop_" so loopback labels never collide with mic labels
                 seg_s = int(seg["start"] * SAMPLE_RATE)
                 seg_e = int(seg["end"] * SAMPLE_RATE)
                 seg_audio = audio[seg_s:seg_e] if seg_e <= len(audio) else None
@@ -214,6 +225,10 @@ class Pipeline:
                     remote_n = sum(1 for s in self.tracker._speakers
                                    if s.startswith("spk_") and s not in ("spk_mic", "spk_loopback"))
                     self.tracker.set_name(stable_id, f"Remote {remote_n + 1}")
+
+                # Accumulate audio clips for this loopback speaker for enrollment
+                if seg_audio is not None and len(seg_audio) > 0:
+                    self._accumulate_clip(stable_id, seg_audio)
             else:
                 stable_id = "spk_loopback"
 
@@ -233,6 +248,100 @@ class Pipeline:
             self.writer.send(msg)
             with self._segments_lock:
                 self._segments.append(msg)
+
+    def _accumulate_clip(self, stable_id: str, audio: np.ndarray):
+        """Append audio to the per-speaker accumulator; finalize into a clip when ≥3s."""
+        if len(self._clip_store.get(stable_id, [])) >= self._MAX_CLIPS:
+            return
+        acc = self._clip_accum.get(stable_id, np.array([], dtype=np.float32))
+        acc = np.concatenate([acc, audio])
+        target = int(self._CLIP_TARGET_S * SAMPLE_RATE)
+        if len(acc) >= target:
+            clip = acc[:target]
+            is_first_clip = stable_id not in self._clip_store
+            self._clip_store.setdefault(stable_id, []).append(clip)
+            self._clip_accum[stable_id] = acc[target:]
+            # First clip ready: try live DB identification in background
+            if is_first_clip and stable_id not in self._identified_in_session:
+                self._identified_in_session.add(stable_id)
+                threading.Thread(
+                    target=self._identify_speaker_live,
+                    args=(stable_id, clip),
+                    daemon=True,
+                ).start()
+        else:
+            self._clip_accum[stable_id] = acc
+
+    def _identify_speaker_live(self, stable_id: str, audio: np.ndarray):
+        """Background: try to identify a loopback speaker against DB once the first 3s clip is ready."""
+        if not self._embedder or not self._embedder.available:
+            return
+        embedding = self._embedder.extract(audio)
+        if embedding is None:
+            return
+        person_id, person_name, score = self._speaker_db.identify(embedding)
+        if person_id:
+            log.info("live_speaker_identified", stable_id=stable_id, name=person_name, score=round(score, 3))
+            self.tracker.set_name(stable_id, person_name)
+            self.writer.send({"type": "speaker_update", "speaker_id": stable_id, "name": person_name})
+        else:
+            log.info("live_speaker_not_matched", stable_id=stable_id, best_score=round(score, 3))
+
+    def _collect_enrollment_data(self) -> List[Dict[str, Any]]:
+        """
+        For each loopback diarized speaker:
+          - Try to identify against the DB using their collected clips
+          - If identified: send speaker_update so the UI shows the known name retroactively
+          - If unknown: include in enrollment payload (clips + computed embedding)
+        Returns list of {session_id, name, clips: [base64wav], embedding: [float]} for unknowns.
+        """
+        import io, wave, base64
+
+        def to_base64_wav(samples: np.ndarray) -> str:
+            buf = io.BytesIO()
+            with wave.open(buf, "wb") as w:
+                w.setnchannels(1)
+                w.setsampwidth(2)
+                w.setframerate(SAMPLE_RATE)
+                w.writeframes((np.clip(samples, -1, 1) * 32767).astype(np.int16).tobytes())
+            return base64.b64encode(buf.getvalue()).decode()
+
+        unknowns = []
+
+        for stable_id, clips in self._clip_store.items():
+            if not clips:
+                continue
+
+            # Concatenate all clips for a better embedding estimate
+            combined = np.concatenate(clips)
+            embedding = self._embedder.extract(combined) if self._embedder and self._embedder.available else None
+
+            if embedding is not None:
+                person_id, person_name, score = self._speaker_db.identify(embedding)
+                if person_id:
+                    log.info("speaker_identified", stable_id=stable_id, name=person_name, score=round(score, 3))
+                    self.tracker.set_name(stable_id, person_name)
+                    self.writer.send({"type": "speaker_update", "speaker_id": stable_id, "name": person_name})
+                    continue  # known — no enrollment needed
+                log.info("speaker_not_identified", stable_id=stable_id, best_score=round(score, 3),
+                         threshold=self._speaker_db._threshold)
+
+            # Unknown speaker — prepare per-clip enrollment payload
+            current_name = self.tracker.get_name(stable_id)
+            clip_payloads = []
+            for clip in clips[:self._MAX_CLIPS]:
+                clip_emb = self._embedder.extract(clip) if self._embedder and self._embedder.available else None
+                clip_payloads.append({
+                    "audio": to_base64_wav(clip),
+                    "embedding": clip_emb.tolist() if clip_emb is not None else [],
+                })
+            unknowns.append({
+                "session_id": stable_id,
+                "name": current_name,
+                "clips": clip_payloads,
+            })
+
+        return unknowns
 
     def _wait_for_mode(self, timeout: float = 30.0) -> str:
         """
@@ -254,6 +363,40 @@ class Pipeline:
         log.info("pipeline_mode_timeout_defaulting_to_retranscribe")
         return "retranscribe"
 
+    def _identify_loopback_speakers(self, audio: np.ndarray, segments: list) -> dict:
+        """
+        Given (optionally diarized) loopback segments, extract per-speaker embeddings
+        and identify against the DB.  Returns {pyannote_label -> display_name}.
+        Works with or without diarization: undiarized segments all share "SPEAKER_00".
+        """
+        from collections import defaultdict
+        spk_audio: dict = defaultdict(list)
+        for seg in segments:
+            label = seg.get("speaker", "SPEAKER_00")
+            s = int(seg["start"] * SAMPLE_RATE)
+            e = int(seg["end"] * SAMPLE_RATE)
+            if e > s and e <= len(audio):
+                spk_audio[label].append(audio[s:e])
+
+        spk_map = {}
+        remote_counter = 0
+        for label, chunks in spk_audio.items():
+            if not chunks:
+                continue
+            combined = np.concatenate(chunks)
+            if self._embedder and self._embedder.available:
+                embedding = self._embedder.extract(combined)
+                if embedding is not None:
+                    person_id, person_name, score = self._speaker_db.identify(embedding)
+                    if person_id:
+                        spk_map[label] = person_name
+                        log.info("retranscribe_speaker_identified",
+                                 label=label, name=person_name, score=round(score, 3))
+                        continue
+            remote_counter += 1
+            spk_map[label] = "Remote" if remote_counter == 1 else f"Remote {remote_counter}"
+        return spk_map
+
     def _build_final_transcript_with_progress(self):
         """
         Re-transcribes the full session audio (mic + loopback separately) using the
@@ -263,6 +406,9 @@ class Pipeline:
         Falls back to the live-segment transcript on any failure.
         """
         log.info("final_transcription_starting", model=self.cfg.whisper_model)
+
+        # Reload speaker DB to pick up any embeddings enrolled during the modal
+        self._speaker_db._load()
 
         self.writer.send({"type": "progress", "stage": "retranscribe", "pct": 0, "label": "Starting re-transcription…"})
 
@@ -293,11 +439,23 @@ class Pipeline:
 
             try:
                 segs = self.transcriber.transcribe_with_progress(audio, make_cb(range_start, range_end, speaker_label))
+
+                if source_tag == SOURCE_LOOPBACK:
+                    if self.diarizer and self.diarizer.available:
+                        turns = self.diarizer.diarize(audio)
+                        segs = self.diarizer.assign_speakers(segs, turns)
+                    spk_map = self._identify_loopback_speakers(audio, segs)
+
                 for seg in segs:
                     text = seg.get("text", "").strip()
                     if text:
                         abs_us = base_us + int(seg["start"] * 1_000_000)
-                        result_segs.append((abs_us, speaker_label, text))
+                        if source_tag == SOURCE_MIC:
+                            name = speaker_label
+                        else:
+                            label = seg.get("speaker", "SPEAKER_00")
+                            name = spk_map.get(label, "Remote")
+                        result_segs.append((abs_us, name, text))
             except Exception as e:
                 log.error("final_transcription_failed", source=speaker_label, error=str(e))
                 self.writer.send({"type": "progress", "stage": "retranscribe",
@@ -358,9 +516,16 @@ class Pipeline:
         except KeyboardInterrupt:
             log.info("pipeline_interrupted")
         finally:
+            # Identify known speakers and build enrollment payload for unknowns
+            if self._clip_store and self.cfg.speaker_enroll:
+                enrollment_speakers = self._collect_enrollment_data()
+                if enrollment_speakers:
+                    self.writer.send({"type": "enrollment_data", "speakers": enrollment_speakers})
+
             self.writer.send({"type": "status", "state": "session_ended"})
 
-            mode = self._wait_for_mode(timeout=30.0)
+            # Timeout is longer to give the user time to complete the enrollment modal
+            mode = self._wait_for_mode(timeout=120.0)
             transcript_segs = []
             if mode == "retranscribe":
                 transcript_text, transcript_segs = self._build_final_transcript_with_progress()
@@ -387,8 +552,40 @@ class Pipeline:
             log.info("pipeline_stopped")
 
 
+def _suppress_library_warnings():
+    """Silence known-harmless warnings from third-party ML libraries."""
+    import warnings
+    import logging
+
+    # torch.load weights_only FutureWarning (speechbrain, lightning_fabric)
+    warnings.filterwarnings("ignore", category=FutureWarning, message=".*weights_only.*")
+    # torch.cuda.amp.custom_fwd deprecated (speechbrain)
+    warnings.filterwarnings("ignore", category=FutureWarning, message=".*custom_fwd.*")
+    warnings.filterwarnings("ignore", category=FutureWarning, message=".*custom_bwd.*")
+    # speechbrain SYMLINK on Windows
+    warnings.filterwarnings("ignore", category=UserWarning, message=".*SYMLINK.*")
+    warnings.filterwarnings("ignore", category=UserWarning, message=".*symlink.*")
+    # pyannote version mismatch ("Model was trained with pyannote.audio 0.0.1...")
+    warnings.filterwarnings("ignore", category=UserWarning, message=".*pyannote.audio 0.*")
+    warnings.filterwarnings("ignore", category=UserWarning, message=".*torch 1\\..*")
+    # pyannote task-dependent loss function
+    warnings.filterwarnings("ignore", category=UserWarning, message=".*task-dependent loss.*")
+    # hf_xet missing (performance suggestion, not an error)
+    warnings.filterwarnings("ignore", message=".*hf_xet.*")
+
+    # Quiet pytorch_lightning upgrade/version chatter (INFO and WARNING go to stderr)
+    for name in ("pytorch_lightning", "lightning_fabric", "lightning"):
+        logging.getLogger(name).setLevel(logging.ERROR)
+
+    # Quiet whisperx's internal VAD pipeline log spam
+    logging.getLogger("whisperx").setLevel(logging.ERROR)
+    logging.getLogger("whisperx.vads").setLevel(logging.ERROR)
+    logging.getLogger("whisperx.vads.pyannote").setLevel(logging.ERROR)
+
+
 def main():
     import logging
+    _suppress_library_warnings()
     structlog.configure(
         wrapper_class=structlog.make_filtering_bound_logger(logging.INFO),
         logger_factory=structlog.PrintLoggerFactory(),

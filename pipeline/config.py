@@ -59,6 +59,11 @@ class Config:
     # Speaker persistence
     speakers_file: str = "speakers.json"
 
+    # Speaker identity database (cross-session recognition + enrollment)
+    speaker_db_file: str = "speakers_db.json"
+    speaker_identify_threshold: float = 0.65  # cosine similarity threshold for a match
+    speaker_enroll: bool = True               # show enrollment modal after sessions
+
     @classmethod
     def load(cls, path: str = "config.toml") -> "Config":
         cfg = cls()

@@ -39,15 +39,25 @@ function handleMessage(msg) {
     case 'progress':
       if (currentPage() === 'debrief') handleProgress(msg);
       break;
+    case 'enrollment_data':
+      handleEnrollmentData(msg);
+      break;
     case 'status':
       if (msg.state === 'ready') {
         setPipelineReady(true);
       } else if (msg.state === 'recording') {
         setRecordingState(true);
       } else if (msg.state === 'session_ended') {
-        if (currentPage() === 'debrief') showChoiceUI();
+        if (currentPage() === 'debrief') {
+          if (_enrollmentData && _enrollmentData.length) {
+            openEnrollmentModal();
+          } else {
+            showChoiceUI();
+          }
+        }
       } else if (msg.state === 'stopped') {
         setRecordingState(false);
+        setPipelineReady(false);  // Python is exiting and will restart — wait for next 'ready'
       }
       break;
     default:
@@ -213,6 +223,8 @@ function newSession() {
   state.segments = [];
   state.speakers = {};
   _summaryText = '';
+  _enrollmentData = null;
+  _enrollmentResult = {};
   setMuteState(false);
   document.getElementById('transcript').innerHTML = '';
   document.getElementById('speakers-list').innerHTML = '';
@@ -287,6 +299,202 @@ async function renameSpeaker(id, name) {
   }
 }
 
+// ---- Speaker enrollment ----
+let _enrollmentData = null;   // speakers array from enrollment_data event
+let _enrollmentIdx = 0;       // current carousel page
+let _enrollmentResult = {};   // session_id → { person_id, name, embedding }
+let _knownPersons = [];       // fetched from get_speaker_database
+
+async function handleEnrollmentData(msg) {
+  if (!msg.speakers || !msg.speakers.length) return;
+  _enrollmentData = msg.speakers;
+  _enrollmentIdx = 0;
+  _enrollmentResult = {};
+  try {
+    const db = await invoke('get_speaker_database');
+    _knownPersons = Object.entries(db.persons || {}).map(([id, p]) => ({ id, name: p.name }));
+  } catch (e) {
+    _knownPersons = [];
+  }
+}
+
+function openEnrollmentModal() {
+  if (!_enrollmentData || !_enrollmentData.length) {
+    showChoiceUI();
+    return;
+  }
+  renderEnrollmentPage(_enrollmentIdx);
+  document.getElementById('enrollment-modal').classList.remove('hidden');
+}
+
+// _enrollmentResult: { session_id: [ { discarded, person_id, name, embedding } | null, ... ] }
+// One entry per clip index; null = unassigned (will be ignored on submit)
+
+function renderEnrollmentPage(idx) {
+  const spk = _enrollmentData[idx];
+  const carousel = document.getElementById('enrollment-carousel');
+  document.getElementById('enrollment-page-label').textContent = `${idx + 1} / ${_enrollmentData.length}`;
+
+  if (!_enrollmentResult[spk.session_id]) {
+    _enrollmentResult[spk.session_id] = spk.clips.map(() => null);
+  }
+  const clipStates = _enrollmentResult[spk.session_id];
+
+  const clipsHtml = spk.clips.map((clip, i) => {
+    const st = clipStates[i];
+    const discarded = st && st.discarded;
+    const currentVal = (st && !st.discarded && st.name) ? escHtml(st.name) : '';
+    const embJson = JSON.stringify(clip.embedding);
+
+    return `<div class="enrollment-clip-row${discarded ? ' discarded' : ''}" id="cliprow-${idx}-${i}">
+      <div class="enrollment-clip-header">
+        <button class="enrollment-clip-btn${discarded ? ' discarded' : ''}"
+          onclick="playEnrollmentClip(this,'${escHtml(clip.audio)}')" ${discarded ? 'disabled' : ''}>
+          ▶ Clip ${i + 1}
+        </button>
+        <button class="enrollment-clip-discard${discarded ? ' active' : ''}"
+          onclick="toggleDiscardClip('${escHtml(spk.session_id)}',${i})">
+          ${discarded ? '↩ Restore' : '✕ Discard'}
+        </button>
+      </div>
+      ${discarded ? '' : `<div class="enrollment-clip-assign">
+        <input class="enrollment-combo-input"
+          id="combo-${idx}-${i}"
+          list="persons-datalist"
+          placeholder="Type name or pick from list…"
+          value="${currentVal}"
+          oninput="onComboInput('${escHtml(spk.session_id)}',${i},this.value)"
+          data-embedding='${embJson}'
+        />
+      </div>`}
+    </div>`;
+  }).join('');
+
+  carousel.innerHTML = `
+    <datalist id="persons-datalist">
+      ${_knownPersons.map(p => `<option value="${escHtml(p.name)}"></option>`).join('')}
+    </datalist>
+    <div class="enrollment-speaker active">
+      <div class="enrollment-speaker-label">UNKNOWN — detected as "${escHtml(spk.name)}" · label each clip individually</div>
+      ${clipsHtml}
+    </div>`;
+}
+
+function playEnrollmentClip(btn, b64) {
+  document.querySelectorAll('.enrollment-clip-btn.playing').forEach(b => b.classList.remove('playing'));
+  btn.classList.add('playing');
+  const audio = new Audio('data:audio/wav;base64,' + b64);
+  audio.onended = () => btn.classList.remove('playing');
+  audio.play();
+}
+
+function toggleDiscardClip(sessionId, clipIdx) {
+  const states = _enrollmentResult[sessionId];
+  const cur = states[clipIdx];
+  states[clipIdx] = cur && cur.discarded ? null : { discarded: true };
+  renderEnrollmentPage(_enrollmentIdx);
+}
+
+function onComboInput(sessionId, clipIdx, value) {
+  const states = _enrollmentResult[sessionId];
+  if (!states) return;
+  const input = document.getElementById(`combo-${_enrollmentIdx}-${clipIdx}`);
+  const embedding = input ? JSON.parse(input.dataset.embedding || '[]') : [];
+  if (!value.trim()) {
+    states[clipIdx] = null;
+    return;
+  }
+  const known = _knownPersons.find(p => p.name.toLowerCase() === value.trim().toLowerCase());
+  states[clipIdx] = {
+    person_id: known ? known.id : null,
+    name: known ? known.name : value.trim(),
+    embedding,
+  };
+}
+
+function enrollPrev() {
+  if (_enrollmentIdx > 0) { _enrollmentIdx--; renderEnrollmentPage(_enrollmentIdx); }
+}
+
+function enrollNext() {
+  if (_enrollmentIdx < _enrollmentData.length - 1) { _enrollmentIdx++; renderEnrollmentPage(_enrollmentIdx); }
+}
+
+async function submitEnrollment() {
+  // Persist each non-discarded, assigned clip to the DB
+  // Track new person name → assigned id within this submission to group clips for the same new person
+  const newPersonIds = {};
+  for (const [, clipStates] of Object.entries(_enrollmentResult)) {
+    for (const st of clipStates) {
+      if (!st || st.discarded || !st.name || !st.embedding || !st.embedding.length) continue;
+      try {
+        // For new persons (no person_id), reuse the id created in this batch
+        const existingNewId = !st.person_id ? newPersonIds[st.name] : null;
+        const result = await invoke('enroll_speaker', {
+          name: st.name,
+          personId: st.person_id || existingNewId || null,
+          embedding: st.embedding,
+        });
+        if (!st.person_id && result.person_id) newPersonIds[st.name] = result.person_id;
+      } catch (e) {
+        console.error('enroll_speaker failed', e);
+      }
+    }
+  }
+  closeEnrollmentModal();
+}
+
+function skipEnrollment() {
+  closeEnrollmentModal();
+}
+
+function closeEnrollmentModal() {
+  document.getElementById('enrollment-modal').classList.add('hidden');
+  _enrollmentData = null;
+  showChoiceUI();
+}
+
+// ---- Voice database management ----
+async function openVoicesModal() {
+  await refreshVoicesList();
+  document.getElementById('voices-modal').classList.remove('hidden');
+}
+
+function closeVoicesModal() {
+  document.getElementById('voices-modal').classList.add('hidden');
+}
+
+async function refreshVoicesList() {
+  const el = document.getElementById('voices-list');
+  let db;
+  try { db = await invoke('get_speaker_database'); } catch (e) { el.innerHTML = '<p class="voices-empty">Error loading database.</p>'; return; }
+  const persons = Object.entries(db.persons || {});
+  if (!persons.length) { el.innerHTML = '<p class="voices-empty">No speakers enrolled yet.</p>'; return; }
+  el.innerHTML = persons.map(([id, p]) => `
+    <div class="voice-row" id="vrow-${escHtml(id)}">
+      <input class="voice-name-input" value="${escHtml(p.name)}"
+        onchange="renameVoice('${escHtml(id)}', this.value)"
+        onkeydown="if(event.key==='Enter') this.blur()" />
+      <span class="voice-count">${p.embeddings ? p.embeddings.length : 0} sample${(p.embeddings || []).length !== 1 ? 's' : ''}</span>
+      <button class="voice-delete-btn" onclick="deleteVoice('${escHtml(id)}')">DELETE</button>
+    </div>
+  `).join('');
+}
+
+async function renameVoice(personId, name) {
+  if (!name.trim()) return;
+  try { await invoke('rename_speaker', { personId, name }); } catch (e) { console.error('rename_speaker failed', e); }
+}
+
+async function deleteVoice(personId) {
+  try {
+    await invoke('delete_speaker', { personId });
+    document.getElementById(`vrow-${personId}`)?.remove();
+    const el = document.getElementById('voices-list');
+    if (!el.children.length) el.innerHTML = '<p class="voices-empty">No speakers enrolled yet.</p>';
+  } catch (e) { console.error('delete_speaker failed', e); }
+}
+
 // ---- Controls ----
 async function toggleMute() {
   const next = !state.muted;
@@ -316,13 +524,19 @@ async function startRecording() {
 }
 
 async function stopRecording() {
+  // Navigate to debrief BEFORE the async invoke so that pipeline events
+  // (enrollment_data, session_ended) which may arrive during the await are
+  // processed on the correct page instead of being silently dropped.
+  setRecordingState(false);
+  _enrollmentData = null;
+  _enrollmentResult = {};
+  showPage('debrief');
+  switchTab('debrief-tab');
+  document.getElementById('debrief-body').innerHTML =
+    '<div class="debrief-loader"><div class="debrief-loader-row"><div class="spinner"></div>' +
+    '<span>Session ended — processing…</span></div></div>';
   try {
     await invoke('stop_recording');
-    setRecordingState(false);
-    // Navigate to debrief and show choice — pipeline will emit 'session_ended' shortly
-    showPage('debrief');
-    switchTab('debrief-tab');
-    showChoiceUI();
   } catch (e) {
     alert(`Stop error: ${e}`);
   }

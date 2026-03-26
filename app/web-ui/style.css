@@ -134,13 +134,19 @@ button.btn-ghost {
   transition: color 0.1s, border-color 0.1s;
 }
 button.btn-ghost:hover { color: var(--text); border-color: var(--text-muted); }
+#btn-copy { padding: 7px 14px; }
 
 .btn-mute {
   font-family: var(--mono);
   font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.1em;
-  padding: 5px 14px;
+  height: 36px;
+  padding: 0 14px;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   background: var(--cyan-dim);
   color: var(--cyan);
   border: 1px solid var(--cyan);
@@ -166,7 +172,12 @@ button.btn-ghost:hover { color: var(--text); border-color: var(--text-muted); }
   font-weight: 700;
   letter-spacing: 0.1em;
   text-transform: uppercase;
-  padding: 7px 22px;
+  height: 36px;
+  padding: 0 22px;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   background: var(--danger-dim);
   color: var(--danger);
   border: 1px solid var(--danger);
@@ -718,3 +729,330 @@ button.btn-ghost:hover { color: var(--text); border-color: var(--text-muted); }
   color: var(--accent);
   letter-spacing: 0.1em;
 }
+
+/* ── Landing voice database button ──────────────────────────────────── */
+.btn-voices {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  padding: 6px 18px;
+  margin-top: 18px;
+  background: transparent;
+  color: var(--text-muted);
+  border: 1px solid var(--border-hi);
+  border-radius: 0;
+  cursor: pointer;
+  transition: color 0.1s, border-color 0.1s;
+}
+.btn-voices:hover { color: var(--text); border-color: var(--text-muted); }
+
+/* ── Modal overlay ───────────────────────────────────────────────────── */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.82);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.modal {
+  background: var(--surface);
+  border: 1px solid var(--border-hi);
+  width: min(640px, 94vw);
+  max-height: 88vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.modal-header {
+  padding: 20px 24px 16px;
+  border-bottom: 1px solid var(--border-hi);
+  flex-shrink: 0;
+}
+
+.modal-title {
+  font-family: var(--font);
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.modal-sub {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-sub);
+  margin-top: 4px;
+  letter-spacing: 0.06em;
+}
+
+.modal-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 20px 24px;
+}
+.modal-body::-webkit-scrollbar { width: 2px; }
+.modal-body::-webkit-scrollbar-thumb { background: var(--border-hi); }
+
+.modal-footer {
+  padding: 14px 24px;
+  border-top: 1px solid var(--border-hi);
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.btn-modal-primary {
+  font-family: var(--font);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  padding: 7px 22px;
+  background: var(--accent-dim);
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: 0;
+  cursor: pointer;
+  transition: background 0.12s;
+}
+.btn-modal-primary:hover { background: rgba(200, 255, 0, 0.14); }
+
+/* ── Enrollment carousel ─────────────────────────────────────────────── */
+.enrollment-speaker {
+  display: none;
+}
+.enrollment-speaker.active {
+  display: block;
+}
+
+.enrollment-speaker-label {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-sub);
+  letter-spacing: 0.1em;
+  margin-bottom: 14px;
+}
+
+/* ── Per-clip rows ───────────────────────────────────────────────────── */
+.enrollment-clip-row {
+  border: 1px solid var(--border);
+  padding: 10px 12px;
+  margin-bottom: 8px;
+  transition: opacity 0.15s;
+}
+.enrollment-clip-row.discarded {
+  opacity: 0.4;
+}
+
+.enrollment-clip-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.enrollment-clip-btn {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  padding: 4px 12px;
+  background: var(--cyan-dim);
+  color: var(--cyan);
+  border: 1px solid var(--cyan);
+  border-radius: 0;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+.enrollment-clip-btn:hover:not(:disabled) { background: rgba(0, 212, 255, 0.14); }
+.enrollment-clip-btn.playing { background: rgba(0, 212, 255, 0.2); }
+.enrollment-clip-btn:disabled { opacity: 0.4; cursor: default; }
+.enrollment-clip-btn.discarded { border-color: var(--border-hi); color: var(--text-muted); background: transparent; }
+
+.enrollment-clip-discard {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  padding: 4px 10px;
+  background: transparent;
+  color: var(--text-muted);
+  border: 1px solid var(--border-hi);
+  border-radius: 0;
+  cursor: pointer;
+  margin-left: auto;
+  transition: color 0.1s, border-color 0.1s;
+}
+.enrollment-clip-discard:hover { color: var(--danger); border-color: var(--danger); }
+.enrollment-clip-discard.active { color: var(--accent); border-color: var(--accent); }
+
+.enrollment-clip-assign {
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
+.enrollment-assign-label {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-sub);
+  letter-spacing: 0.08em;
+  margin-bottom: 10px;
+}
+
+.enrollment-combo-input {
+  width: 100%;
+  background: transparent;
+  border: 1px solid var(--border-hi);
+  color: var(--text);
+  padding: 6px 10px;
+  font-family: var(--font);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  outline: none;
+  box-sizing: border-box;
+  transition: border-color 0.1s;
+}
+.enrollment-combo-input:focus { border-color: var(--accent); }
+.enrollment-combo-input::placeholder { color: var(--text-muted); text-transform: none; font-weight: 500; }
+
+.enrollment-persons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.enrollment-person-btn {
+  font-family: var(--font);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 5px 16px;
+  background: transparent;
+  color: var(--text-muted);
+  border: 1px solid var(--border-hi);
+  border-radius: 0;
+  cursor: pointer;
+  transition: color 0.1s, border-color 0.1s;
+}
+.enrollment-person-btn:hover { color: var(--text); border-color: var(--text-muted); }
+.enrollment-person-btn.selected {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--accent-dim);
+}
+
+.enrollment-new-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-top: 8px;
+}
+
+.enrollment-new-input {
+  flex: 1;
+  background: transparent;
+  border: 1px solid var(--border-hi);
+  color: var(--text);
+  padding: 5px 10px;
+  font-family: var(--font);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  outline: none;
+  transition: border-color 0.1s;
+}
+.enrollment-new-input:focus { border-color: var(--accent); }
+.enrollment-new-input::placeholder { color: var(--text-muted); text-transform: none; font-weight: 500; }
+
+.enrollment-new-btn {
+  font-family: var(--mono);
+  font-size: 11px;
+  padding: 5px 12px;
+  background: transparent;
+  color: var(--text-muted);
+  border: 1px solid var(--border-hi);
+  border-radius: 0;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color 0.1s, border-color 0.1s;
+}
+.enrollment-new-btn:hover { color: var(--text); border-color: var(--text-muted); }
+
+.enrollment-page-label {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-muted);
+  letter-spacing: 0.1em;
+}
+
+#enrollment-nav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+
+/* ── Voices DB list ──────────────────────────────────────────────────── */
+.voices-empty {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text-muted);
+  padding: 8px 0;
+  letter-spacing: 0.08em;
+}
+
+.voice-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.voice-name-input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid transparent;
+  color: var(--text);
+  padding: 2px 4px;
+  font-family: var(--font);
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  outline: none;
+  transition: border-color 0.1s, color 0.1s;
+}
+.voice-name-input:focus { border-bottom-color: var(--accent); color: var(--accent); }
+
+.voice-count {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.voice-delete-btn {
+  font-family: var(--mono);
+  font-size: 10px;
+  padding: 3px 8px;
+  background: transparent;
+  color: var(--danger);
+  border: 1px solid var(--danger);
+  border-radius: 0;
+  cursor: pointer;
+  opacity: 0.6;
+  transition: opacity 0.1s;
+}
+.voice-delete-btn:hover { opacity: 1; }
