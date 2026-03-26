@@ -1,14 +1,10 @@
 [
   {
-    "id": "spk_0",
-    "name": "spk_0"
-  },
-  {
     "id": "spk_mic",
     "name": "You"
   },
   {
-    "id": "spk_1",
-    "name": "spk_1"
+    "id": "spk_loopback",
+    "name": "Remote"
   }
 ]

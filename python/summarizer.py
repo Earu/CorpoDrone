@@ -1,20 +1,35 @@
 """
-Summarizes the conversation transcript using Ollama (local LLM).
-Runs in a background thread, producing summaries every N seconds.
+Generates a one-shot meeting summary using Ollama (local LLM).
+Called explicitly at the end of a recording session — no background thread.
 """
 import threading
-import time
-import queue
-from typing import List, Dict, Any, Callable
+from typing import List, Dict, Any
 import structlog
 
 log = structlog.get_logger(__name__)
 
-SYSTEM_PROMPT = (
-    "You are a meeting assistant. Summarize the following conversation transcript "
-    "concisely. Identify key topics, decisions made, and action items if any. "
-    "Be brief and factual. Do not invent information."
-)
+SYSTEM_PROMPT = """\
+You are a meeting assistant. Analyze the conversation transcript below and produce a structured summary in Markdown.
+
+Use this exact structure (omit sections that don't apply):
+
+## Overview
+One or two sentences describing what the meeting was about.
+
+## Key Topics
+- Bullet list of the main subjects discussed.
+
+## Decisions Made
+- Bullet list of any decisions or conclusions reached.
+
+## Action Items
+- Bullet list of tasks or next steps, with owner if mentioned.
+
+## Notable Quotes
+- Any direct quotes worth highlighting (use > blockquote syntax).
+
+Be concise and factual. Do not invent information not present in the transcript.\
+"""
 
 
 def _build_transcript_text(segments: List[Dict[str, Any]]) -> str:
@@ -27,25 +42,16 @@ def _build_transcript_text(segments: List[Dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
-class Summarizer(threading.Thread):
+class Summarizer:
     def __init__(
         self,
         model: str = "mistral",
         host: str = "http://localhost:11434",
-        interval_seconds: int = 60,
-        on_summary: Callable[[str], None] = None,
     ):
-        super().__init__(daemon=True, name="summarizer")
         self.model = model
         self.host = host
-        self.interval_seconds = interval_seconds
-        self.on_summary = on_summary
-        self._stop_event = threading.Event()
         self._segments: List[Dict[str, Any]] = []
         self._lock = threading.Lock()
-
-    def stop(self):
-        self._stop_event.set()
 
     def update_segments(self, segments: List[Dict[str, Any]]):
         with self._lock:
@@ -72,14 +78,14 @@ class Summarizer(threading.Thread):
                     {"role": "user", "content": text},
                 ],
             )
-            return response["message"]["content"].strip()
+            msg = response.message if hasattr(response, "message") else response["message"]
+            content = msg.content if hasattr(msg, "content") else msg["content"]
+            content = content.strip()
+            # Strip ```markdown ... ``` or ``` ... ``` wrappers some models add
+            if content.startswith("```"):
+                lines = content.splitlines()
+                content = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
+            return content.strip()
         except Exception as e:
             log.error("summarize_failed", error=str(e))
             return ""
-
-    def run(self):
-        log.info("summarizer_started", model=self.model, interval=self.interval_seconds)
-        while not self._stop_event.wait(timeout=self.interval_seconds):
-            summary = self._summarize_now()
-            if summary and self.on_summary:
-                self.on_summary(summary)

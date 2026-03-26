@@ -14,12 +14,14 @@ min_speakers = 1
 max_speakers = 8
 
 # Sliding window config (seconds)
-window_seconds = 5.0
-step_seconds = 1.0
+# Whisper and PyAnnote both need long context to work well.
+# window_seconds: how much audio to transcribe/diarize each step (15-30s recommended)
+# step_seconds: how often to process a new window (3-5s recommended)
+window_seconds = 20.0
+step_seconds = 3.0
 
-# Summarization via Ollama
+# Summarization via Ollama (generated once when Stop is pressed)
 summarize = true
-summarize_interval_seconds = 60
 ollama_model = "mistral"
 ollama_host = "http://localhost:11434"
 

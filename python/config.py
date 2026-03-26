@@ -50,9 +50,8 @@ class Config:
     window_seconds: float = 5.0           # transcription window size
     step_seconds: float = 1.0            # how often to process a new window
 
-    # Summarization
+    # Summarization (generated once at end of session)
     summarize: bool = True
-    summarize_interval_seconds: int = 60
     ollama_model: str = "mistral"
     ollama_host: str = "http://localhost:11434"
 
