@@ -16,23 +16,8 @@ Capture audio from your microphone and speakers simultaneously, transcribe with 
 
 ## Architecture
 
-```
-┌────────────────────────────────────────────────────────┐
-│  Tauri App (Rust)                                                                                              │
-│  ┌──────────────────┐    ┌──────────────────────────────┐  │
-│  │  audio-capture                     │─▶│  Named Pipe (binary audio)                                 │  │
-│  │  (WASAPI mic +                     │    └──────────────┬───────────────┘  │
-│  │   loopback)                        │                                  ▼                                  │
-│  └──────────────────┘    ┌──────────────────────────────┐  │
-│                                              │  Python Pipeline                                           │  │
-│  ┌──────────────────┐    │  Whisper → PyAnnote →                                    │  │
-│  │  Web UI                            │◀─│  SpeakerTracker → Ollama                                  │  │
-│  │  (transcript,                      │    └──────────────────────────────┘  │
-│  │   speakers,                        │                                                                      │
-│  │   summary)                         │                                                                      │
-│  └──────────────────┘                                                                      │
-└────────────────────────────────────────────────────────┘
-```
+<img width="1176" height="415" alt="image" src="https://github.com/user-attachments/assets/6d48aa17-afd3-484c-bc95-100fc8b20c67" />
+
 
 **IPC**: Tauri spawns `audio-capture.exe` and `pipeline.py` as child processes. Audio flows over a Windows named pipe (`\\.\pipe\corpodrone-audio`) as framed binary. Transcript segments and commands flow as JSON lines over a second pipe and stdin/stdout.
 
