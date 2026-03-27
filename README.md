@@ -5,6 +5,9 @@ Capture audio from your microphone and speakers simultaneously, transcribe with 
 ![Platform](https://img.shields.io/badge/platform-Windows-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
+<img width="1238" height="1069" alt="image" src="https://github.com/user-attachments/assets/0557b96e-1c64-4365-92da-ef4978b4145c" />
+<img width="1238" height="1070" alt="image" src="https://github.com/user-attachments/assets/936935db-219e-4bdb-ba82-54f12b07c41d" />
+
 ## Features
 
 - **Dual audio capture**: mic input and loopback (speaker output) captured simultaneously via WASAPI
