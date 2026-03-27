@@ -1,19 +1,24 @@
 """
-CorpoDrone Python pipeline — main entry point.
+CorpoDrone Python pipeline — persistent service entry point.
 
 Flow:
-  AudioReceiver (named pipe) → chunk queue
-  → AudioStream accumulates samples and tracks committed position
-  → every step_seconds: transcribe + diarize the current window
-  → only emit segments that are "confirmed" (end before last step_seconds of window)
-    and haven't been emitted before → eliminates duplicates from sliding windows
-  → SpeakerTracker maps labels → stable IDs
-  → TranscriptWriter sends to Rust web-server
-  → Summarizer runs every N seconds in background
+  Tauri spawns this process once at app startup (models loaded once).
+  For each recording session:
+    AudioReceiver (named pipe) → chunk queue
+    → AudioStream accumulates samples and tracks committed position
+    → every step_seconds: transcribe + diarize the current window
+    → only emit segments that are "confirmed" (end before last step_seconds of window)
+      and haven't been emitted before → eliminates duplicates from sliding windows
+    → SpeakerTracker maps labels → stable IDs
+    → TranscriptWriter sends to Rust
+    → after audio-capture exits (sentinel), do post-processing
+    → wait for {"cmd": "set_mode", "mode": "..."} on stdin from Tauri
+    → re-transcribe / summarize → send final_summary
+    → reset per-session state → wait for next session
 """
+import json
 import os
 import sys
-import time
 import queue
 import threading
 import uuid
@@ -136,6 +141,24 @@ class SessionRecorder:
         return np.concatenate([c.samples for c in chunks]), chunks[0].timestamp_us
 
 
+class CommandReader(threading.Thread):
+    """Reads JSON-line commands from stdin and puts them on a queue."""
+
+    def __init__(self, cmd_queue: queue.Queue):
+        super().__init__(daemon=True, name="cmd-reader")
+        self._q = cmd_queue
+
+    def run(self):
+        for line in sys.stdin:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                self._q.put(json.loads(line))
+            except json.JSONDecodeError:
+                log.warning("cmd_reader_invalid_json", line=line[:120])
+
+
 class Pipeline:
     def __init__(self, cfg: Config):
         self.cfg = cfg
@@ -143,47 +166,63 @@ class Pipeline:
         log.info("init_pipeline")
         self.writer = TranscriptWriter(cfg.transcript_pipe)
 
+        # Heavy models — loaded once, reused across sessions
         self.transcriber = Transcriber(cfg.whisper_model, cfg.whisper_device, cfg.whisper_compute_type)
         self.diarizer = Diarizer(cfg.hf_token, cfg.min_speakers, cfg.max_speakers) if cfg.diarize else None
         self._speaker_db = SpeakerDatabase(cfg.speaker_db_file, cfg.speaker_identify_threshold)
         self._embedder = EmbeddingExtractor(cfg.whisper_device) if cfg.speaker_enroll else None
-        self.tracker = SpeakerTracker(cfg.speakers_file, encoder=self._embedder)
-        self.session_recorder = SessionRecorder()
+        self.summarizer = Summarizer(model=cfg.ollama_model, host=cfg.ollama_host) if cfg.summarize else None
 
-        # Mic always = "You", loopback always = "Remote" (source-based identity).
-        # If pyannote is available, it's used to split MULTIPLE remote speakers on loopback,
-        # but mic vs loopback distinction is always source-driven.
-        self.tracker.set_name("spk_mic", "You")
-        self.tracker.set_name("spk_loopback", "Remote")
+        # Stdin command channel (Tauri writes JSON-line commands)
+        self._cmd_queue: queue.Queue = queue.Queue()
+        CommandReader(self._cmd_queue).start()
 
-        self._segments: List[Dict[str, Any]] = []
-        self._segments_lock = threading.Lock()
-
-        # Per-speaker clip accumulator: stable_id → (accumulating_samples, finalized_clips)
-        # Clips are ~3s audio arrays, max 4 per speaker, used for enrollment at session end
-        self._clip_accum: Dict[str, np.ndarray] = {}   # ongoing accumulation
-        self._clip_store: Dict[str, List[np.ndarray]] = {}  # finalized clips (≥3s)
+        # Per-session constants (never change)
         self._MAX_CLIPS = 4
         self._CLIP_TARGET_S = 3.0
-        self._identified_in_session: set = set()  # stable_ids already checked against DB live
+        self._segments_lock = threading.Lock()
 
-        if cfg.summarize:
-            self.summarizer = Summarizer(
-                model=cfg.ollama_model,
-                host=cfg.ollama_host,
-            )
-            # Do NOT start the background thread — summary is generated once on stop only.
-        else:
-            self.summarizer = None
-
-        self.receiver = AudioReceiver(cfg.audio_pipe)
-        self.receiver.start()
-
-        self.mic_stream = AudioStream(cfg.window_seconds, cfg.step_seconds)
-        self.loop_stream = AudioStream(cfg.window_seconds, cfg.step_seconds)
+        # Initialise per-session state and start the first AudioReceiver
+        self._session_id = 0
+        self._init_session_state()
 
         # Signal the frontend that all models are loaded and we're ready to record.
         self.writer.send({"type": "status", "state": "ready"})
+
+    # ------------------------------------------------------------------
+    # Per-session state management
+    # ------------------------------------------------------------------
+
+    def _init_session_state(self):
+        """
+        Create/reset all mutable per-session state.
+        Called once at startup (from __init__) and after each session completes.
+        """
+        self._session_id += 1
+        session = self._session_id  # capture for closure / background threads
+
+        self.receiver = AudioReceiver(self.cfg.audio_pipe)
+        self.receiver.start()
+
+        self.mic_stream = AudioStream(self.cfg.window_seconds, self.cfg.step_seconds)
+        self.loop_stream = AudioStream(self.cfg.window_seconds, self.cfg.step_seconds)
+        self.session_recorder = SessionRecorder()
+
+        self.tracker = SpeakerTracker(self.cfg.speakers_file, encoder=self._embedder)
+        self.tracker.set_name("spk_mic", "You")
+        self.tracker.set_name("spk_loopback", "Remote")
+
+        with self._segments_lock:
+            self._segments: List[Dict[str, Any]] = []
+        self._clip_accum: Dict[str, np.ndarray] = {}
+        self._clip_store: Dict[str, List[np.ndarray]] = {}
+        self._identified_in_session: set = set()
+
+        log.info("session_state_initialised", session_id=session)
+
+    # ------------------------------------------------------------------
+    # Stream processing (called every step during recording)
+    # ------------------------------------------------------------------
 
     def _process_stream(self, stream: AudioStream, source_tag: int):
         if not stream.has_audio or not stream.ready():
@@ -264,28 +303,58 @@ class Pipeline:
             # First clip ready: try live DB identification in background
             if is_first_clip and stable_id not in self._identified_in_session:
                 self._identified_in_session.add(stable_id)
+                captured_session = self._session_id
                 threading.Thread(
                     target=self._identify_speaker_live,
-                    args=(stable_id, clip),
+                    args=(stable_id, clip, captured_session),
                     daemon=True,
                 ).start()
         else:
             self._clip_accum[stable_id] = acc
 
-    def _identify_speaker_live(self, stable_id: str, audio: np.ndarray):
+    def _find_stable_id_by_name(self, name: str) -> Optional[str]:
+        """Return the stable_id already assigned to this name, or None."""
+        for sid, info in self.tracker._speakers.items():
+            if info.get("name") == name:
+                return sid
+        return None
+
+    def _apply_identification(self, stable_id: str, person_name: str):
+        """
+        Assign person_name to stable_id. If another stable_id already has this name,
+        merge stable_id into that one and emit speaker_merge; otherwise emit speaker_update.
+        """
+        existing_id = self._find_stable_id_by_name(person_name)
+        if existing_id and existing_id != stable_id:
+            self.tracker.merge_into(stable_id, existing_id)
+            self._clip_store.setdefault(existing_id, []).extend(self._clip_store.pop(stable_id, []))
+            self._clip_accum.pop(stable_id, None)
+            self._identified_in_session.discard(stable_id)
+            self.writer.send({"type": "speaker_merge", "from_id": stable_id, "into_id": existing_id, "name": person_name})
+        else:
+            self.tracker.set_name(stable_id, person_name)
+            self.writer.send({"type": "speaker_update", "speaker_id": stable_id, "name": person_name})
+
+    def _identify_speaker_live(self, stable_id: str, audio: np.ndarray, session_id: int):
         """Background: try to identify a loopback speaker against DB once the first 3s clip is ready."""
         if not self._embedder or not self._embedder.available:
             return
         embedding = self._embedder.extract(audio)
         if embedding is None:
             return
+        # Guard: discard result if the session has already been reset
+        if self._session_id != session_id:
+            return
         person_id, person_name, score = self._speaker_db.identify(embedding)
         if person_id:
             log.info("live_speaker_identified", stable_id=stable_id, name=person_name, score=round(score, 3))
-            self.tracker.set_name(stable_id, person_name)
-            self.writer.send({"type": "speaker_update", "speaker_id": stable_id, "name": person_name})
+            self._apply_identification(stable_id, person_name)
         else:
             log.info("live_speaker_not_matched", stable_id=stable_id, best_score=round(score, 3))
+
+    # ------------------------------------------------------------------
+    # Post-session helpers
+    # ------------------------------------------------------------------
 
     def _collect_enrollment_data(self) -> List[Dict[str, Any]]:
         """
@@ -308,8 +377,12 @@ class Pipeline:
 
         unknowns = []
 
-        for stable_id, clips in self._clip_store.items():
+        for stable_id, clips in list(self._clip_store.items()):
             if not clips:
+                continue
+
+            # Skip if this stable_id was already merged into another during live identification
+            if stable_id not in self.tracker._speakers:
                 continue
 
             # Concatenate all clips for a better embedding estimate
@@ -320,8 +393,7 @@ class Pipeline:
                 person_id, person_name, score = self._speaker_db.identify(embedding)
                 if person_id:
                     log.info("speaker_identified", stable_id=stable_id, name=person_name, score=round(score, 3))
-                    self.tracker.set_name(stable_id, person_name)
-                    self.writer.send({"type": "speaker_update", "speaker_id": stable_id, "name": person_name})
+                    self._apply_identification(stable_id, person_name)
                     continue  # known — no enrollment needed
                 log.info("speaker_not_identified", stable_id=stable_id, best_score=round(score, 3),
                          threshold=self._speaker_db._threshold)
@@ -343,33 +415,36 @@ class Pipeline:
 
         return unknowns
 
-    def _wait_for_mode(self, timeout: float = 30.0) -> str:
+    def _wait_for_mode(self) -> str:
         """
-        Poll the .pipeline_mode file written by Tauri until it appears or timeout.
-        Deletes the file after reading. Defaults to 'retranscribe'.
+        Block until Tauri sends {"cmd": "set_mode", "mode": "..."} on stdin.
+        No timeout — the user can take as long as they need.
         """
-        mode_file = ".pipeline_mode"
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            if os.path.exists(mode_file):
-                try:
-                    mode = open(mode_file).read().strip()
-                    os.remove(mode_file)
+        while True:
+            try:
+                cmd = self._cmd_queue.get(timeout=0.5)
+                if cmd.get("cmd") == "set_mode":
+                    mode = cmd.get("mode", "retranscribe")
                     log.info("pipeline_mode_received", mode=mode)
                     return mode if mode in ("retranscribe", "live") else "retranscribe"
-                except Exception:
-                    pass
-            time.sleep(0.5)
-        log.info("pipeline_mode_timeout_defaulting_to_retranscribe")
-        return "retranscribe"
+            except queue.Empty:
+                continue
 
     def _identify_loopback_speakers(self, audio: np.ndarray, segments: list) -> dict:
         """
         Given (optionally diarized) loopback segments, extract per-speaker embeddings
         and identify against the DB.  Returns {pyannote_label -> display_name}.
-        Works with or without diarization: undiarized segments all share "SPEAKER_00".
+
+        Slices each speaker's audio into 5-second chunks, extracts one embedding per
+        chunk, then averages them into a centroid.  Feeding the full concatenated audio
+        to ECAPA directly gives a poor embedding because the model was trained on short
+        utterances; the centroid approach is both more accurate and avoids OOM on long
+        sessions.
         """
         from collections import defaultdict
+        CLIP_SAMPLES = 5 * SAMPLE_RATE   # 5-second chunks
+        MAX_CLIPS = 10                   # cap at 50 s per speaker
+
         spk_audio: dict = defaultdict(list)
         for seg in segments:
             label = seg.get("speaker", "SPEAKER_00")
@@ -383,16 +458,32 @@ class Pipeline:
         for label, chunks in spk_audio.items():
             if not chunks:
                 continue
-            combined = np.concatenate(chunks)
             if self._embedder and self._embedder.available:
-                embedding = self._embedder.extract(combined)
-                if embedding is not None:
-                    person_id, person_name, score = self._speaker_db.identify(embedding)
-                    if person_id:
-                        spk_map[label] = person_name
-                        log.info("retranscribe_speaker_identified",
-                                 label=label, name=person_name, score=round(score, 3))
-                        continue
+                combined = np.concatenate(chunks)
+                normed_embs = []
+                for i in range(0, len(combined), CLIP_SAMPLES):
+                    clip = combined[i:i + CLIP_SAMPLES]
+                    emb = self._embedder.extract(clip)
+                    if emb is not None:
+                        n = np.linalg.norm(emb)
+                        if n > 1e-9:
+                            normed_embs.append(emb / n)
+                    if len(normed_embs) >= MAX_CLIPS:
+                        break
+
+                if normed_embs:
+                    centroid = np.mean(normed_embs, axis=0)
+                    c_norm = np.linalg.norm(centroid)
+                    if c_norm > 1e-9:
+                        centroid /= c_norm
+                        person_id, person_name, score = self._speaker_db.identify(centroid)
+                        if person_id:
+                            spk_map[label] = person_name
+                            log.info("retranscribe_speaker_identified",
+                                     label=label, name=person_name,
+                                     score=round(score, 3), n_clips=len(normed_embs))
+                            continue
+
             remote_counter += 1
             spk_map[label] = "Remote" if remote_counter == 1 else f"Remote {remote_counter}"
         return spk_map
@@ -484,8 +575,18 @@ class Pipeline:
                 lines.append(f"{spk}: {text}")
         return "\n".join(lines)
 
-    def run(self):
-        log.info("pipeline_running")
+    # ------------------------------------------------------------------
+    # Session loop
+    # ------------------------------------------------------------------
+
+    def _run_session(self):
+        """
+        Process one recording session: consume audio until sentinel, then do
+        post-processing (enrollment → mode selection → transcription → summary).
+        Returns normally on clean session end; raises KeyboardInterrupt to stop.
+        """
+        log.info("session_starting", session_id=self._session_id)
+        ended_normally = False
 
         try:
             while True:
@@ -500,6 +601,7 @@ class Pipeline:
                 if chunk is None:
                     # Sentinel — audio-capture stopped (clean or killed)
                     log.info("end_of_stream")
+                    ended_normally = True
                     break
 
                 if chunk.source == SOURCE_MIC:
@@ -514,39 +616,57 @@ class Pipeline:
                 self._process_stream(self.loop_stream, SOURCE_LOOPBACK)
 
         except KeyboardInterrupt:
+            log.info("session_interrupted")
+            raise
+
+        if not ended_normally:
+            return
+
+        # --- Post-processing ---
+        if self._clip_store and self.cfg.speaker_enroll:
+            enrollment_speakers = self._collect_enrollment_data()
+            if enrollment_speakers:
+                self.writer.send({"type": "enrollment_data", "speakers": enrollment_speakers})
+
+        self.writer.send({"type": "status", "state": "session_ended"})
+
+        mode = self._wait_for_mode()
+        transcript_segs = []
+        if mode == "retranscribe":
+            transcript_text, transcript_segs = self._build_final_transcript_with_progress()
+        else:
+            log.info("using_live_transcript")
+            transcript_text = self._fallback_transcript()
+
+        if self.summarizer:
+            log.info("generating_final_summary")
+            self.writer.send({"type": "progress", "stage": "summarize", "pct": 0, "label": "Generating debrief…"})
+            self.summarizer.set_transcript_text(transcript_text)
+
+            def summarize_progress_cb(pct):
+                self.writer.send({"type": "progress", "stage": "summarize",
+                                  "pct": pct, "label": "Generating debrief…"})
+
+            final = self.summarizer._summarize_now(progress_cb=summarize_progress_cb)
+            self.writer.send({"type": "final_summary", "text": final or "", "transcript": transcript_segs})
+        else:
+            self.writer.send({"type": "final_summary", "text": "", "transcript": transcript_segs})
+
+        log.info("session_complete", session_id=self._session_id)
+
+    def run(self):
+        """
+        Outer loop: run sessions back-to-back until the process is killed or
+        interrupted. Models stay loaded in memory across sessions.
+        """
+        try:
+            while True:
+                self._run_session()
+                # Reset per-session state and start a fresh AudioReceiver for the next session
+                self._init_session_state()
+        except KeyboardInterrupt:
             log.info("pipeline_interrupted")
         finally:
-            # Identify known speakers and build enrollment payload for unknowns
-            if self._clip_store and self.cfg.speaker_enroll:
-                enrollment_speakers = self._collect_enrollment_data()
-                if enrollment_speakers:
-                    self.writer.send({"type": "enrollment_data", "speakers": enrollment_speakers})
-
-            self.writer.send({"type": "status", "state": "session_ended"})
-
-            # Timeout is longer to give the user time to complete the enrollment modal
-            mode = self._wait_for_mode(timeout=120.0)
-            transcript_segs = []
-            if mode == "retranscribe":
-                transcript_text, transcript_segs = self._build_final_transcript_with_progress()
-            else:
-                log.info("using_live_transcript")
-                transcript_text = self._fallback_transcript()
-
-            if self.summarizer:
-                log.info("generating_final_summary")
-                self.writer.send({"type": "progress", "stage": "summarize", "pct": 0, "label": "Generating debrief…"})
-                self.summarizer.set_transcript_text(transcript_text)
-
-                def summarize_progress_cb(pct):
-                    self.writer.send({"type": "progress", "stage": "summarize",
-                                      "pct": pct, "label": "Generating debrief…"})
-
-                final = self.summarizer._summarize_now(progress_cb=summarize_progress_cb)
-                self.writer.send({"type": "final_summary", "text": final or "", "transcript": transcript_segs})
-            else:
-                self.writer.send({"type": "final_summary", "text": "", "transcript": transcript_segs})
-
             self.writer.send({"type": "status", "state": "stopped"})
             self.writer.close()
             log.info("pipeline_stopped")
@@ -589,6 +709,11 @@ def main():
     structlog.configure(
         wrapper_class=structlog.make_filtering_bound_logger(logging.INFO),
         logger_factory=structlog.PrintLoggerFactory(),
+        processors=[
+            structlog.stdlib.add_log_level,
+            structlog.processors.TimeStamper(fmt="%H:%M:%S", utc=False),
+            structlog.processors.JSONRenderer(),
+        ],
     )
 
     config_path = os.path.join(os.path.dirname(__file__), "..", "config.toml")
