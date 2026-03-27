@@ -23,6 +23,9 @@ async function connectTauri() {
   await window.__TAURI__.event.listen('pipeline-event', (event) => {
     handleMessage(event.payload);
   });
+  await window.__TAURI__.event.listen('log-line', (event) => {
+    appendLogLine(event.payload.process, event.payload.line);
+  });
 }
 
 function handleMessage(msg) {
@@ -35,6 +38,9 @@ function handleMessage(msg) {
       break;
     case 'speaker_update':
       updateSpeakerName(msg.speaker_id, msg.name);
+      break;
+    case 'speaker_merge':
+      mergeSpeaker(msg.from_id, msg.into_id, msg.name);
       break;
     case 'progress':
       if (currentPage() === 'debrief') handleProgress(msg);
@@ -57,7 +63,7 @@ function handleMessage(msg) {
         }
       } else if (msg.state === 'stopped') {
         setRecordingState(false);
-        setPipelineReady(false);  // Python is exiting and will restart — wait for next 'ready'
+        setPipelineReady(false);  // Python process is exiting (app closing)
       }
       break;
     default:
@@ -112,6 +118,7 @@ function clearTranscript() {
 
 // ---- Debrief page ----
 let _summaryText = '';
+let _transcriptSegs = [];
 
 function showChoiceUI() {
   document.getElementById('debrief-choice').classList.remove('hidden');
@@ -156,9 +163,10 @@ function setOverallProgress(pct, label) {
 }
 
 function populateTranscriptTab(segments) {
+  _transcriptSegs = segments || [];
   const el = document.getElementById('transcript-tab-body');
   if (!el) return;
-  if (!segments || !segments.length) {
+  if (!_transcriptSegs.length) {
     el.innerHTML = '<p class="tab-empty">No transcript recorded.</p>';
     return;
   }
@@ -194,8 +202,9 @@ function switchTab(tabId) {
   document.querySelectorAll('.debrief-tab-panel').forEach(p => p.classList.add('hidden'));
   document.getElementById(tabId).classList.add('active');
   document.getElementById(tabId + '-panel').classList.remove('hidden');
-  document.getElementById('btn-copy').style.display =
-    (tabId === 'debrief-tab' && _summaryText) ? '' : 'none';
+  const showCopy = (tabId === 'debrief-tab' && !!_summaryText) ||
+                   (tabId === 'transcript-tab' && _transcriptSegs.length > 0);
+  document.getElementById('btn-copy').style.display = showCopy ? '' : 'none';
 }
 
 function showDebrief(msg) {
@@ -223,6 +232,7 @@ function newSession() {
   state.segments = [];
   state.speakers = {};
   _summaryText = '';
+  _transcriptSegs = [];
   _enrollmentData = null;
   _enrollmentResult = {};
   setMuteState(false);
@@ -237,9 +247,22 @@ function newSession() {
 }
 
 async function copySummary() {
-  if (!_summaryText) return;
+  const activeTab = document.querySelector('.debrief-tab.active')?.id;
+  let text;
+  if (activeTab === 'transcript-tab') {
+    text = _transcriptSegs.map(seg => {
+      const isLive = seg.speaker_id !== undefined;
+      const spkName = isLive
+        ? ((state.speakers[seg.speaker_id] || {}).name || seg.speaker_name || seg.speaker_id)
+        : (seg.speaker || 'Unknown');
+      return `${spkName}: ${seg.text}`;
+    }).join('\n');
+  } else {
+    text = _summaryText;
+  }
+  if (!text) return;
   try {
-    await navigator.clipboard.writeText(_summaryText);
+    await navigator.clipboard.writeText(text);
     const btn = document.getElementById('btn-copy');
     btn.textContent = 'Copied!';
     setTimeout(() => { btn.textContent = 'Copy'; }, 1800);
@@ -288,6 +311,28 @@ function updateSpeakerName(id, name) {
       el.querySelector('.segment-speaker').textContent = name;
     }
   });
+}
+
+function mergeSpeaker(fromId, intoId, name) {
+  ensureSpeaker(intoId);
+  updateSpeakerName(intoId, name);
+  const intoSpk = state.speakers[intoId];
+  // Reassign all segments from the duplicate to the canonical speaker
+  state.segments.forEach(seg => {
+    if (seg.speaker_id !== fromId) return;
+    seg.speaker_id = intoId;
+    const el = document.getElementById(`seg-${seg.id}`);
+    if (el) {
+      const dot = el.querySelector('.speaker-dot');
+      const label = el.querySelector('.segment-speaker');
+      if (dot) dot.style.background = intoSpk.color;
+      if (label) { label.textContent = name; label.style.color = intoSpk.color; }
+    }
+  });
+  // Remove the duplicate speaker row
+  delete state.speakers[fromId];
+  const row = document.getElementById(`spk-row-${fromId}`);
+  if (row) row.remove();
 }
 
 async function renameSpeaker(id, name) {
@@ -607,3 +652,126 @@ document.addEventListener('DOMContentLoaded', () => {
 
   connectTauri();
 });
+
+// ---- Debug log drawer ----
+const LOG_MAX_LINES = 500;
+let _logTab = 'pipeline';
+
+function toggleLog() {
+  const drawer = document.getElementById('log-drawer');
+  const open = drawer.classList.toggle('open');
+  document.getElementById('log-handle-label').textContent = open ? '▼ LOG' : '▲ LOG';
+  if (open) {
+    const pane = document.getElementById(`log-pane-${_logTab}`);
+    if (pane) pane.scrollTop = pane.scrollHeight;
+  }
+}
+
+function switchLogTab(tab) {
+  _logTab = tab;
+  document.querySelectorAll('.log-tab').forEach(b => b.classList.remove('active'));
+  const btn = [...document.querySelectorAll('.log-tab')].find(b => b.textContent.toLowerCase() === tab);
+  if (btn) btn.classList.add('active');
+  document.querySelectorAll('.log-pane').forEach(p => p.classList.add('hidden'));
+  const pane = document.getElementById(`log-pane-${tab}`);
+  if (pane) {
+    pane.classList.remove('hidden');
+    pane.scrollTop = pane.scrollHeight;
+  }
+}
+
+function clearCurrentLogTab() {
+  const pane = document.getElementById(`log-pane-${_logTab}`);
+  if (pane) pane.innerHTML = '';
+}
+
+const LOG_LEVEL_STYLES = {
+  debug:    'color:#636d83',
+  info:     'color:#56b6c2',
+  warning:  'color:#e5c07b',
+  error:    'color:#e06c75',
+  critical: 'color:#e06c75;font-weight:bold',
+};
+
+const ANSI_STYLES = {
+  '1': 'font-weight:bold', '2': 'opacity:0.55', '3': 'font-style:italic',
+  '31': 'color:#e06c75', '32': 'color:#98c379', '33': 'color:#e5c07b',
+  '34': 'color:#61afef', '35': 'color:#c678dd', '36': 'color:#56b6c2',
+  '37': 'color:#abb2bf', '90': 'color:#636d83', '91': 'color:#e06c75',
+  '92': 'color:#98c379', '93': 'color:#e5c07b', '94': 'color:#61afef',
+  '95': 'color:#c678dd', '96': 'color:#56b6c2', '97': 'color:#ffffff',
+};
+
+function esc(s) {
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function ansiToHtml(text) {
+  const parts = esc(text).split(/\x1b\[([0-9;]*)m/);
+  let html = '';
+  let openSpans = 0;
+  for (let i = 0; i < parts.length; i++) {
+    if (i % 2 === 0) {
+      html += parts[i];
+    } else {
+      const code = parts[i];
+      if (code === '' || code === '0') {
+        while (openSpans > 0) { html += '</span>'; openSpans--; }
+      } else {
+        const styles = code.split(';').map(c => ANSI_STYLES[c]).filter(Boolean);
+        if (styles.length) { html += `<span style="${styles.join(';')}">`;  openSpans++; }
+      }
+    }
+  }
+  while (openSpans > 0) { html += '</span>'; openSpans--; }
+  return html;
+}
+
+function renderStructuredLog(level, ts, event, extras) {
+  const levelStyle = LOG_LEVEL_STYLES[level.toLowerCase()] || '';
+  const tsShort = ts.length > 8 ? ts.slice(11, 19) : ts; // ISO → HH:MM:SS
+  const kvs = Object.entries(extras)
+    .map(([k, v]) => `<span style="color:#636d83">${esc(k)}</span>=<span style="color:#abb2bf">${esc(v)}</span>`)
+    .join(' ');
+  return `<span style="color:#636d83">${esc(tsShort)}</span> ` +
+         `[<span style="${levelStyle}">${esc(level.toLowerCase())}</span>] ` +
+         `<span style="color:#e0e0e0;font-weight:bold">${esc(event)}</span>` +
+         (kvs ? ` ${kvs}` : '');
+}
+
+function formatLogLine(process, line) {
+  try {
+    const obj = JSON.parse(line);
+    // tracing-subscriber JSON: { timestamp, level, target, fields: { message, ...} }
+    if (obj.fields) {
+      const { message, ...extras } = obj.fields;
+      return renderStructuredLog(obj.level || 'info', obj.timestamp || '', message || '', extras);
+    }
+    // structlog JSON: { level, timestamp, event, ...extras }
+    if (obj.event !== undefined || obj.level !== undefined) {
+      const { level, timestamp, event, ...extras } = obj;
+      return renderStructuredLog(level || 'info', timestamp || '', event || '', extras);
+    }
+  } catch (_) { /* not JSON */ }
+  // Fallback: parse ANSI codes
+  return ansiToHtml(line);
+}
+
+function appendLogLine(process, line) {
+  const pane = document.getElementById(`log-pane-${process}`);
+  if (!pane) return;
+
+  const atBottom = pane.scrollHeight - pane.scrollTop - pane.clientHeight < 20;
+
+  const el = document.createElement('div');
+  el.className = 'log-line';
+  el.innerHTML = formatLogLine(process, line);
+  pane.appendChild(el);
+
+  // Trim oldest lines when over the limit
+  while (pane.childElementCount > LOG_MAX_LINES) {
+    pane.removeChild(pane.firstChild);
+  }
+
+  if (atBottom) pane.scrollTop = pane.scrollHeight;
+}

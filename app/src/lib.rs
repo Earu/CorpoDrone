@@ -1,6 +1,8 @@
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, State};
+use tokio::io::AsyncWriteExt;
+use tokio::sync::Mutex as TokioMutex;
 
 static RECORDING: AtomicBool = AtomicBool::new(false);
 static MUTED: AtomicBool = AtomicBool::new(false);
@@ -16,9 +18,10 @@ struct Config {
     speakers_file: String,
 }
 
+/// Holds Python's stdin so Tauri commands can send JSON-line control messages.
+struct PythonStdin(TokioMutex<Option<tokio::process::ChildStdin>>);
+
 fn load_config() -> Config {
-    // audio-capture.exe always lives next to this binary (both in target/{profile}/ or
-    // both extracted side-by-side in a distribution zip).
     let capture_bin = std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(|d| d.join("audio-capture.exe")))
@@ -70,6 +73,32 @@ fn load_config() -> Config {
     cfg
 }
 
+// ---- Log helpers ----
+
+/// Emit a line to the in-app debug console under the given process tab.
+fn emit_log(app: &AppHandle, process: &str, line: impl Into<String>) {
+    let _ = app.emit("log-line", serde_json::json!({
+        "process": process,
+        "line": line.into(),
+    }));
+}
+
+/// Read lines from a child process stream and forward them to the in-app console.
+async fn stream_output(
+    reader: impl tokio::io::AsyncRead + Unpin + Send + 'static,
+    process: &'static str,
+    app: AppHandle,
+) {
+    use tokio::io::{AsyncBufReadExt, BufReader};
+    let mut lines = BufReader::new(reader).lines();
+    loop {
+        match lines.next_line().await {
+            Ok(Some(line)) => emit_log(&app, process, line),
+            _ => break,
+        }
+    }
+}
+
 // ---- Tauri commands ----
 
 #[tauri::command]
@@ -92,7 +121,10 @@ fn set_mute(muted: bool) -> serde_json::Value {
 }
 
 #[tauri::command]
-async fn start_recording(state: State<'_, Arc<Config>>) -> Result<serde_json::Value, String> {
+async fn start_recording(
+    state: State<'_, Arc<Config>>,
+    app: AppHandle,
+) -> Result<serde_json::Value, String> {
     if RECORDING.load(Ordering::Relaxed) {
         return Err("Already recording".to_string());
     }
@@ -100,18 +132,38 @@ async fn start_recording(state: State<'_, Arc<Config>>) -> Result<serde_json::Va
     let bin = state.capture_bin.clone();
     let pipe = state.audio_pipe.clone();
 
-    let child = tokio::process::Command::new(&bin)
-        .arg("--pipe")
-        .arg(&pipe)
-        .spawn()
-        .map_err(|e| format!("Failed to start audio capture: {e}"))?;
+    let mut cmd = tokio::process::Command::new(&bin);
+    cmd.arg("--pipe").arg(&pipe);
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
 
+    #[cfg(windows)]
+    {
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+
+    let mut child = cmd.spawn().map_err(|e| format!("Failed to start audio capture: {e}"))?;
+
+    let pid = child.id().unwrap_or(0);
     RECORDING.store(true, Ordering::Relaxed);
-    tracing::info!("audio-capture started (pid={})", child.id().unwrap_or(0));
+    emit_log(&app, "system", format!("audio-capture started (pid={pid})"));
+    tracing::info!("audio-capture started (pid={pid})");
+
+    // Stream stdout/stderr to the in-app console
+    if let Some(stdout) = child.stdout.take() {
+        let app_c = app.clone();
+        tokio::spawn(async move { stream_output(stdout, "audio", app_c).await });
+    }
+    if let Some(stderr) = child.stderr.take() {
+        let app_c = app.clone();
+        tokio::spawn(async move { stream_output(stderr, "audio", app_c).await });
+    }
 
     tokio::spawn(async move {
-        let _ = child.wait_with_output().await;
+        let _ = child.wait().await;
         RECORDING.store(false, Ordering::Relaxed);
+        emit_log(&app, "system", "audio-capture stopped");
         tracing::info!("audio-capture process exited");
     });
 
@@ -136,10 +188,24 @@ async fn stop_recording() -> Result<serde_json::Value, String> {
     Ok(serde_json::json!({ "ok": true }))
 }
 
+/// Send a JSON-line command to the Python pipeline via its stdin.
+async fn send_python_cmd(stdin_state: &PythonStdin, cmd: serde_json::Value) {
+    let line = format!("{}\n", cmd);
+    let mut guard = stdin_state.0.lock().await;
+    if let Some(stdin) = guard.as_mut() {
+        if let Err(e) = stdin.write_all(line.as_bytes()).await {
+            tracing::warn!("Failed to write to Python stdin: {e}");
+        }
+    }
+}
+
 #[tauri::command]
-fn set_pipeline_mode(mode: String) -> serde_json::Value {
-    let _ = std::fs::write(".pipeline_mode", &mode);
-    serde_json::json!({ "ok": true })
+async fn set_pipeline_mode(
+    mode: String,
+    stdin_state: State<'_, Arc<PythonStdin>>,
+) -> Result<serde_json::Value, String> {
+    send_python_cmd(&stdin_state, serde_json::json!({"cmd": "set_mode", "mode": mode})).await;
+    Ok(serde_json::json!({ "ok": true }))
 }
 
 // ── Speaker identity database ──────────────────────────────────────────────
@@ -213,8 +279,6 @@ async fn update_speaker(
     name: String,
     state: State<'_, Arc<Config>>,
 ) -> Result<serde_json::Value, String> {
-    // Update speakers.json so the name persists across sessions.
-    // Format: [{"id": "spk_mic", "name": "You"}, ...]
     let path = &state.speakers_file;
     if let Ok(text) = std::fs::read_to_string(path) {
         if let Ok(mut entries) = serde_json::from_str::<Vec<serde_json::Value>>(&text) {
@@ -310,39 +374,68 @@ async fn run_pipe_reader(pipe_path: String, _app: AppHandle) {
 
 // ---- Python process ----
 
-async fn spawn_python(cfg: &Config) -> anyhow::Result<()> {
+async fn spawn_python(cfg: &Config, stdin_state: Arc<PythonStdin>, app: AppHandle) -> anyhow::Result<()> {
     let script = std::path::Path::new(&cfg.python_script);
     if !script.exists() {
         anyhow::bail!("Python script not found: {}", script.display());
     }
 
     loop {
-        tracing::info!(
-            "Spawning Python pipeline: {} {}",
-            cfg.python_exe,
-            script.display()
-        );
+        tracing::info!("Spawning Python pipeline: {} {}", cfg.python_exe, script.display());
+        emit_log(&app, "system", format!("Spawning Python pipeline: {}", script.display()));
 
         let mut cmd = tokio::process::Command::new(&cfg.python_exe);
         cmd.arg(&cfg.python_script);
+        cmd.stdin(std::process::Stdio::piped());
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::piped());
 
         #[cfg(windows)]
         {
             const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
-            cmd.creation_flags(CREATE_NEW_PROCESS_GROUP);
+            const CREATE_NO_WINDOW: u32 = 0x08000000;
+            cmd.creation_flags(CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW);
         }
 
         match cmd.spawn() {
             Ok(mut child) => {
+                // Store stdin for command sending
+                {
+                    let mut guard = stdin_state.0.lock().await;
+                    *guard = child.stdin.take();
+                }
+
+                // Stream stdout/stderr to the in-app console
+                if let Some(stdout) = child.stdout.take() {
+                    let app_c = app.clone();
+                    tokio::spawn(async move { stream_output(stdout, "pipeline", app_c).await });
+                }
+                if let Some(stderr) = child.stderr.take() {
+                    let app_c = app.clone();
+                    tokio::spawn(async move { stream_output(stderr, "pipeline", app_c).await });
+                }
+
                 if let Some(pid) = child.id() {
                     PYTHON_PID.store(pid, Ordering::Relaxed);
+                    emit_log(&app, "system", format!("Python pipeline started (pid={pid})"));
                     tracing::info!("Python pipeline pid={pid}");
                 }
+
                 let _ = child.wait().await;
+
+                // Clear stale stdin handle
+                {
+                    let mut guard = stdin_state.0.lock().await;
+                    *guard = None;
+                }
+
+                emit_log(&app, "system", "Python pipeline exited");
                 tracing::info!("Python pipeline exited");
             }
             Err(e) => {
-                tracing::warn!("Failed to spawn Python pipeline: {e}");
+                let msg = format!("Failed to spawn Python pipeline: {e}");
+                emit_log(&app, "system", &msg);
+                tracing::warn!("{msg}");
             }
         }
 
@@ -350,6 +443,7 @@ async fn spawn_python(cfg: &Config) -> anyhow::Result<()> {
             break;
         }
 
+        emit_log(&app, "system", "Restarting Python pipeline in 1s...");
         tracing::info!("Restarting Python pipeline in 1s...");
         tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
 
@@ -377,10 +471,6 @@ fn kill_subprocesses() {
 // ---- App entry point ----
 
 pub fn run() {
-    // Anchor CWD so that relative paths (config.toml, pipeline/, speakers.json) resolve correctly
-    // in both dev and distributed modes.
-    //   Dev:          exe is target/{profile}/corpo-drone.exe → go up two levels to workspace root
-    //   Distributed:  exe is next to config.toml → use exe directory directly
     if let Ok(exe) = std::env::current_exe() {
         if let Some(exe_dir) = exe.parent() {
             let base = if exe_dir.join("config.toml").exists() {
@@ -403,9 +493,11 @@ pub fn run() {
         .init();
 
     let cfg = Arc::new(load_config());
+    let python_stdin = Arc::new(PythonStdin(TokioMutex::new(None)));
 
     tauri::Builder::default()
         .manage(Arc::clone(&cfg))
+        .manage(Arc::clone(&python_stdin))
         .invoke_handler(tauri::generate_handler![
             get_status,
             start_recording,
@@ -427,10 +519,12 @@ pub fn run() {
                 run_pipe_reader(pipe_path, app_handle).await;
             });
 
-            // Spawn Python pipeline
+            // Spawn Python pipeline (stays alive for the entire app session)
             let cfg_py = Arc::clone(&cfg);
+            let stdin_py = Arc::clone(&python_stdin);
+            let app_py = app.handle().clone();
             tauri::async_runtime::spawn(async move {
-                if let Err(e) = spawn_python(&cfg_py).await {
+                if let Err(e) = spawn_python(&cfg_py, stdin_py, app_py).await {
                     tracing::warn!("Could not auto-start Python pipeline: {e}");
                 }
             });

@@ -14,7 +14,7 @@ import structlog
 
 log = structlog.get_logger(__name__)
 
-SIMILARITY_THRESHOLD = 0.85
+SIMILARITY_THRESHOLD = 0.45
 
 
 def cosine_sim(a: np.ndarray, b: np.ndarray) -> float:
@@ -30,7 +30,8 @@ class SpeakerTracker:
         # stable_id -> {"name": str, "embedding": np.ndarray | None}
         self._speakers: Dict[str, dict] = {}
         self._next_id = 0
-        self._load()
+        # Do NOT load from file — embeddings are never persisted so loaded entries
+        # can never match anyone. Cross-session identity lives in speakers_db.json.
         # Optional encoder: any object with extract(audio: np.ndarray) -> np.ndarray | None
         self._encoder = encoder
         if encoder is not None and getattr(encoder, "available", False):
@@ -137,6 +138,14 @@ class SpeakerTracker:
             self._speakers[speaker_id]["name"] = name
         self._save()
         log.info("speaker_renamed", id=speaker_id, name=name)
+
+    def merge_into(self, from_id: str, into_id: str):
+        """Redirect all session-map entries from from_id to into_id and remove from_id."""
+        for key in list(self._session_map.keys()):
+            if self._session_map[key] == from_id:
+                self._session_map[key] = into_id
+        self._speakers.pop(from_id, None)
+        log.info("speaker_merged", from_id=from_id, into_id=into_id)
 
     def reset_session(self):
         """Call at start of each recording session to clear label mapping."""

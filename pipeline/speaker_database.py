@@ -13,7 +13,7 @@ import structlog
 
 log = structlog.get_logger(__name__)
 
-DEFAULT_THRESHOLD = 0.75
+DEFAULT_THRESHOLD = 0.58
 
 
 class SpeakerDatabase:
@@ -45,6 +45,9 @@ class SpeakerDatabase:
     def identify(self, embedding: np.ndarray) -> Tuple[Optional[str], Optional[str], float]:
         """
         Find the best matching person for the given embedding.
+        Uses centroid comparison: normalises each stored embedding, averages them into
+        a unit-vector centroid, and compares the query against that centroid.
+        This is more robust than per-embedding max when some stored clips are noisy.
         Returns (person_id, person_name, confidence) or (None, None, best_score).
         """
         with self._lock:
@@ -54,10 +57,10 @@ class SpeakerDatabase:
             return None, None, 0.0
 
         emb = embedding.astype(np.float32)
-        norm = np.linalg.norm(emb)
-        if norm < 1e-9:
+        emb_norm = np.linalg.norm(emb)
+        if emb_norm < 1e-9:
             return None, None, 0.0
-        emb = emb / norm
+        emb = emb / emb_norm
 
         best_id = None
         best_name = None
@@ -67,20 +70,36 @@ class SpeakerDatabase:
             embeddings = person.get("embeddings", [])
             if not embeddings:
                 continue
+
+            # Normalize all valid stored embeddings
+            normed = []
             for stored in embeddings:
                 stored_arr = np.array(stored, dtype=np.float32)
-                stored_norm = np.linalg.norm(stored_arr)
-                if stored_norm < 1e-9:
+                n = np.linalg.norm(stored_arr)
+                if n < 1e-9:
                     continue
-                stored_arr = stored_arr / stored_norm
-                score = float(np.dot(emb, stored_arr))
-                if score > best_score:
-                    best_score = score
-                    best_id = person_id
-                    best_name = person["name"]
+                normed.append(stored_arr / n)
+
+            if not normed:
+                continue
+
+            centroid = np.mean(normed, axis=0)
+            c_norm = np.linalg.norm(centroid)
+            if c_norm < 1e-9:
+                continue
+            centroid = centroid / c_norm
+
+            score = float(np.dot(emb, centroid))
+            log.debug("identify_score", person=person["name"], score=round(score, 3),
+                      n_stored=len(embeddings), n_clean=len(normed))
+            if score > best_score:
+                best_score = score
+                best_id = person_id
+                best_name = person["name"]
 
         if best_score >= self._threshold:
             return best_id, best_name, best_score
+        log.debug("identify_no_match", best_score=round(best_score, 3), threshold=self._threshold)
         return None, None, best_score
 
     def list_persons(self) -> List[Dict[str, Any]]:

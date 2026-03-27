@@ -146,6 +146,26 @@
     </div>
   </div>
 
+  <!-- ── Debug log drawer ───────────────────────────────────────────── -->
+  <div id="log-drawer">
+    <div id="log-handle" onclick="toggleLog()">
+      <span id="log-handle-label">▲ LOG</span>
+    </div>
+    <div id="log-panel">
+      <div id="log-tabs-bar">
+        <button class="log-tab active" onclick="switchLogTab('pipeline')">Pipeline</button>
+        <button class="log-tab" onclick="switchLogTab('audio')">Audio</button>
+        <button class="log-tab" onclick="switchLogTab('system')">System</button>
+        <button id="log-clear-btn" onclick="clearCurrentLogTab()">Clear</button>
+      </div>
+      <div id="log-content">
+        <div id="log-pane-pipeline" class="log-pane"></div>
+        <div id="log-pane-audio" class="log-pane hidden"></div>
+        <div id="log-pane-system" class="log-pane hidden"></div>
+      </div>
+    </div>
+  </div>
+
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
   <script src="/app.js"></script>
 </body>

@@ -19,6 +19,7 @@ struct Args {
 
 fn main() -> Result<()> {
     tracing_subscriber::fmt()
+        .json()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env()
             .add_directive("audio_capture=info".parse()?))
         .init();
