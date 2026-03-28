@@ -118,13 +118,17 @@ class AudioStream:
         self._committed = new_committed
         self._next_process_at = self._total
 
-        # Trim buffer: keep 2 windows worth, but never past committed position
-        keep_from = max(0, len(self._buf) - self.window_samples * 2)
-        committed_buf_idx = self._committed - self._trimmed
-        keep_from = min(keep_from, committed_buf_idx)
-        if keep_from > 0:
-            self._buf = self._buf[keep_from:]
-            self._trimmed += keep_from
+        # Trim buffer to at most 2 windows. The old committed-position guard
+        # prevented trimming when _committed didn't advance (silence / all segments
+        # in the unsafe trailing zone), causing the buffer to grow without bound and
+        # making each np.concatenate in add() progressively more expensive.
+        # It's safe to trim unconditionally: get_window() only ever reads the last
+        # window_samples samples, so anything older is unreachable regardless.
+        max_buf = self.window_samples * 2
+        if len(self._buf) > max_buf:
+            removed = len(self._buf) - max_buf
+            self._buf = self._buf[removed:]
+            self._trimmed += removed
 
         return out
 
