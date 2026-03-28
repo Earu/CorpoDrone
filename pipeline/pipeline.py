@@ -26,6 +26,18 @@ from typing import List, Dict, Any, Optional
 
 import numpy as np
 import structlog
+import torch
+
+# PyTorch 2.6 changed torch.load to default weights_only=True, which breaks
+# pyannote/whisperx checkpoints containing non-tensor globals (e.g. omegaconf types).
+# lightning_fabric explicitly passes weights_only=None, which PyTorch 2.6 treats as True.
+# Intercept None → False to restore pre-2.6 behaviour for these trusted local files.
+_torch_load_orig = torch.load
+def _torch_load_compat(*args, **kwargs):
+    if kwargs.get("weights_only") is None:
+        kwargs["weights_only"] = False
+    return _torch_load_orig(*args, **kwargs)
+torch.load = _torch_load_compat
 
 from config import Config
 from audio_receiver import AudioReceiver, AudioChunk, SOURCE_MIC, SOURCE_LOOPBACK
