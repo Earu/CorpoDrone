@@ -34,7 +34,7 @@ function handleMessage(msg) {
       addSegment(msg);
       break;
     case 'final_summary':
-      if (currentPage() === 'debrief') showDebrief(msg);
+      if (!_ignoredProcessing && currentPage() === 'debrief') showDebrief(msg);
       break;
     case 'speaker_update':
       updateSpeakerName(msg.speaker_id, msg.name);
@@ -54,12 +54,28 @@ function handleMessage(msg) {
       } else if (msg.state === 'recording') {
         setRecordingState(true);
       } else if (msg.state === 'session_ended') {
+        if (_ignoredProcessing) break;
+        const modal = document.getElementById('end-session-modal');
+        if (!modal.classList.contains('hidden')) {
+          modal.classList.add('hidden');
+          _enterDebrief();
+        }
         if (currentPage() === 'debrief') {
           if (_enrollmentData && _enrollmentData.length) {
             openEnrollmentModal();
           } else {
             showChoiceUI();
           }
+        }
+      } else if (msg.state === 'pipeline_crashed') {
+        setPipelineReady(false);
+        if (!_ignoredProcessing && currentPage() === 'debrief') {
+          document.getElementById('debrief-choice').classList.add('hidden');
+          document.getElementById('debrief-progress').classList.add('hidden');
+          document.getElementById('debrief-body').innerHTML =
+            '<p class="tab-empty">Pipeline stopped — live transcript preserved in the Transcript tab.</p>';
+          populateTranscriptTab(state.segments);
+          switchTab('transcript-tab');
         }
       } else if (msg.state === 'stopped') {
         setRecordingState(false);
@@ -119,6 +135,8 @@ function clearTranscript() {
 // ---- Debrief page ----
 let _summaryText = '';
 let _transcriptSegs = [];
+let _pipelineActive = false;   // true while audio-capture is running
+let _ignoredProcessing = false; // true after user clicked "Ignore and continue"
 
 function showChoiceUI() {
   document.getElementById('debrief-choice').classList.remove('hidden');
@@ -131,6 +149,35 @@ function showChoiceUI() {
 }
 
 async function choosePipelineMode(mode) {
+  // For modes that produce a summary, verify Ollama is available first.
+  let ollamaCfg = null;
+  try {
+    ollamaCfg = await invoke('get_ollama_config');
+  } catch (e) {
+    console.error('get_ollama_config failed', e);
+  }
+
+  if (ollamaCfg && ollamaCfg.summarize) {
+    let status = { running: false, has_model: false };
+    try {
+      status = await invoke('check_ollama_status');
+    } catch (e) {
+      console.error('check_ollama_status failed', e);
+    }
+    if (!status.running) {
+      openOllamaModal(mode, ollamaCfg, false);
+      return;
+    }
+    if (!status.has_model) {
+      openOllamaModal(mode, ollamaCfg, true);
+      return;
+    }
+  }
+
+  _proceedWithMode(mode);
+}
+
+async function _proceedWithMode(mode) {
   document.getElementById('debrief-choice').classList.add('hidden');
   document.getElementById('debrief-progress').classList.remove('hidden');
   setOverallProgress(0, mode === 'retranscribe' ? 'Starting re-transcription…' : 'Building summary…');
@@ -139,6 +186,123 @@ async function choosePipelineMode(mode) {
   } catch (e) {
     console.error('set_pipeline_mode failed', e);
   }
+}
+
+// ---- Ollama modal ----
+let _ollamaMode = null;       // pending pipeline mode to proceed with
+let _ollamaCfg = null;        // { host, model }
+let _ollamaTimer = null;      // setInterval polling handle
+let _ollamaTimeout = null;    // setTimeout 30s handle
+
+function openOllamaModal(mode, cfg, needsPull = false) {
+  _ollamaMode = mode;
+  _ollamaCfg = cfg;
+
+  const sub = document.getElementById('ollama-modal-sub');
+  const startBtn = document.getElementById('ollama-start-btn');
+  const startingRow = document.getElementById('ollama-starting-row');
+  const statusLabel = document.getElementById('ollama-status-label');
+  const timeoutMsg = document.getElementById('ollama-timeout-msg');
+
+  if (needsPull) {
+    sub.textContent = `Model "${cfg.model}" is not downloaded yet`;
+    startBtn.textContent = `Pull ${cfg.model}`;
+    statusLabel.textContent = `Downloading ${cfg.model}…`;
+  } else {
+    sub.textContent = 'Ollama is required to generate a debrief summary';
+    startBtn.textContent = 'Start Ollama';
+    statusLabel.textContent = 'Starting Ollama…';
+  }
+
+  startBtn.disabled = false;
+  startingRow.classList.add('hidden');
+  timeoutMsg.classList.add('hidden');
+  document.getElementById('ollama-desc').classList.remove('hidden');
+
+  document.getElementById('ollama-modal').classList.remove('hidden');
+}
+
+async function startOllama() {
+  const startBtn = document.getElementById('ollama-start-btn');
+  const skipBtn = document.getElementById('ollama-skip-btn');
+  const startingRow = document.getElementById('ollama-starting-row');
+  const timeoutMsg = document.getElementById('ollama-timeout-msg');
+
+  startBtn.disabled = true;
+  skipBtn.disabled = true;
+  document.getElementById('ollama-desc').classList.add('hidden');
+  startingRow.classList.remove('hidden');
+  timeoutMsg.classList.add('hidden');
+
+  // Spawn ollama serve — check immediately if the binary was found
+  let spawnResult = { ok: false, error: 'unknown' };
+  try {
+    spawnResult = await invoke('start_ollama_service');
+  } catch (e) {
+    spawnResult = { ok: false, error: String(e) };
+  }
+
+  if (!spawnResult.ok) {
+    _clearOllamaTimers();
+    startBtn.disabled = false;
+    skipBtn.disabled = false;
+    startingRow.classList.add('hidden');
+    document.getElementById('ollama-desc').classList.remove('hidden');
+    timeoutMsg.innerHTML =
+      'Ollama is not installed. <a class="btn-inline-link" href="https://ollama.com" target="_blank">Download it from ollama.com</a> and restart.';
+    timeoutMsg.classList.remove('hidden');
+    return;
+  }
+
+  _clearOllamaTimers();
+
+  // Poll every 2s, 30s total timeout
+  _ollamaTimer = setInterval(async () => {
+    let status = { running: false, has_model: false };
+    try { status = await invoke('check_ollama_status'); } catch {}
+    if (!status.running) return;
+    if (status.has_model) {
+      _clearOllamaTimers();
+      closeOllamaModal();
+      _proceedWithMode(_ollamaMode);
+    } else {
+      // Ollama is up but still pulling — update the label
+      document.getElementById('ollama-status-label').textContent = `Downloading ${_ollamaCfg.model}…`;
+    }
+  }, 2000);
+
+  _ollamaTimeout = setTimeout(() => {
+    _clearOllamaTimers();
+    startBtn.disabled = false;
+    skipBtn.disabled = false;
+    startingRow.classList.add('hidden');
+    timeoutMsg.classList.remove('hidden');
+    document.getElementById('ollama-desc').classList.add('hidden');
+  }, 30000);
+}
+
+function retryOllama() {
+  startOllama();
+}
+
+function skipOllama() {
+  _clearOllamaTimers();
+  closeOllamaModal();
+  // No debrief — show transcript only
+  document.getElementById('debrief-choice').classList.add('hidden');
+  document.getElementById('debrief-body').innerHTML =
+    '<p class="tab-empty">Debrief skipped — Ollama not started.</p>';
+  populateTranscriptTab(state.segments);
+  switchTab('transcript-tab');
+}
+
+function closeOllamaModal() {
+  document.getElementById('ollama-modal').classList.add('hidden');
+}
+
+function _clearOllamaTimers() {
+  if (_ollamaTimer) { clearInterval(_ollamaTimer); _ollamaTimer = null; }
+  if (_ollamaTimeout) { clearTimeout(_ollamaTimeout); _ollamaTimeout = null; }
 }
 
 function handleProgress(msg) {
@@ -228,13 +392,53 @@ function showDebrief(msg) {
   switchTab('debrief-tab');
 }
 
+async function confirmEndSession() {
+  _pipelineActive = false;
+  document.getElementById('end-session-modal').classList.remove('hidden');
+  try {
+    await invoke('stop_recording');
+  } catch (e) {
+    _enterDebrief();
+  }
+}
+
+async function ignoreAndContinue() {
+  _ignoredProcessing = true;
+  document.getElementById('end-session-modal').classList.add('hidden');
+  try { await invoke('kill_pipeline'); } catch (_) {}
+  // Show debrief tab with fallback message and populate transcript with live segments
+  state.recording = false;
+  const recDot = document.getElementById('rec-dot');
+  if (recDot) recDot.className = 'dot';
+  showPage('debrief');
+  switchTab('debrief-tab');
+  document.getElementById('debrief-body').innerHTML =
+    '<p class="tab-empty">Debrief unavailable — session was ended before processing completed.</p>';
+  populateTranscriptTab(state.segments);
+}
+
+function _enterDebrief() {
+  state.recording = false;
+  const recDot = document.getElementById('rec-dot');
+  if (recDot) recDot.className = 'dot';
+  _enrollmentData = null;
+  _enrollmentResult = {};
+  showPage('debrief');
+  switchTab('debrief-tab');
+  document.getElementById('debrief-body').innerHTML =
+    '<div class="debrief-loader"><div class="debrief-loader-row"><div class="spinner"></div>' +
+    '<span>Session ended — processing…</span></div></div>';
+}
+
 function newSession() {
   state.segments = [];
   state.speakers = {};
   _summaryText = '';
   _transcriptSegs = [];
+  _ignoredProcessing = false;
   _enrollmentData = null;
   _enrollmentResult = {};
+  _clearOllamaTimers();
   setMuteState(false);
   document.getElementById('transcript').innerHTML = '';
   document.getElementById('speakers-list').innerHTML = '';
@@ -562,30 +766,13 @@ function setMuteState(muted) {
 async function startRecording() {
   try {
     await invoke('start_recording');
+    _pipelineActive = true;
     setRecordingState(true);
   } catch (e) {
     alert(`Start error: ${e}`);
   }
 }
 
-async function stopRecording() {
-  // Navigate to debrief BEFORE the async invoke so that pipeline events
-  // (enrollment_data, session_ended) which may arrive during the await are
-  // processed on the correct page instead of being silently dropped.
-  setRecordingState(false);
-  _enrollmentData = null;
-  _enrollmentResult = {};
-  showPage('debrief');
-  switchTab('debrief-tab');
-  document.getElementById('debrief-body').innerHTML =
-    '<div class="debrief-loader"><div class="debrief-loader-row"><div class="spinner"></div>' +
-    '<span>Session ended — processing…</span></div></div>';
-  try {
-    await invoke('stop_recording');
-  } catch (e) {
-    alert(`Stop error: ${e}`);
-  }
-}
 
 function currentPage() {
   for (const id of ['landing', 'workspace', 'debrief']) {
@@ -687,7 +874,7 @@ function clearCurrentLogTab() {
 
 const LOG_LEVEL_STYLES = {
   debug:    'color:#636d83',
-  info:     'color:#56b6c2',
+  info:     'color:#c8ff00',
   warning:  'color:#e5c07b',
   error:    'color:#e06c75',
   critical: 'color:#e06c75;font-weight:bold',

@@ -13,6 +13,7 @@
   --text:        #e0e0e0;
   --text-muted:  #484848;
   --text-sub:    rgba(224, 224, 224, 0.6);
+  --warning:     #f0a500;
   --danger:      #ff3030;
   --danger-dim:  rgba(255, 48, 48, 0.1);
   --cyan:        #00d4ff;
@@ -149,15 +150,15 @@ button.btn-ghost:hover { color: var(--text); border-color: var(--text-muted); }
   display: flex;
   align-items: center;
   justify-content: center;
-  background: var(--cyan-dim);
-  color: var(--cyan);
-  border: 1px solid var(--cyan);
+  background: var(--accent-dim);
+  color: var(--accent);
+  border: 1px solid var(--accent);
   border-radius: 0;
   cursor: pointer;
   transition: background 0.12s, color 0.12s, border-color 0.12s;
 }
 .btn-mute:hover {
-  background: rgba(0, 212, 255, 0.14);
+  background: rgba(200, 255, 0, 0.14);
 }
 .btn-mute.muted {
   background: var(--danger-dim);
@@ -828,6 +829,61 @@ button.btn-ghost:hover { color: var(--text); border-color: var(--text-muted); }
   transition: background 0.12s;
 }
 .btn-modal-primary:hover { background: rgba(200, 255, 0, 0.14); }
+.btn-modal-danger {
+  font-family: var(--font);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  padding: 7px 22px;
+  background: var(--danger-dim);
+  color: var(--danger);
+  border: 1px solid var(--danger);
+  border-radius: 0;
+  cursor: pointer;
+  transition: background 0.12s;
+}
+.btn-modal-danger:hover { background: rgba(255, 48, 48, 0.2); }
+
+.end-session-modal-body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 12px 0 8px;
+}
+
+#end-session-modal .modal-body  { padding: 28px 32px 20px; }
+#end-session-modal .modal-footer { padding: 16px 32px 24px; }
+.end-session-modal-label {
+  font-family: var(--mono);
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  color: var(--text);
+}
+.end-session-modal-info {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-muted);
+  line-height: 1.6;
+  margin: 0;
+}
+
+/* Ollama modal */
+#ollama-modal .modal-title { color: var(--warning); }
+#ollama-modal .modal-body  { padding: 24px 32px 16px; }
+#ollama-modal .modal-footer { padding: 16px 32px 24px; }
+
+.btn-inline-link {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--accent);
+  font-family: var(--mono);
+  font-size: inherit;
+  cursor: pointer;
+  text-decoration: underline;
+}
+.btn-inline-link:hover { color: var(--text); }
 
 /* ── Enrollment carousel ─────────────────────────────────────────────── */
 .enrollment-speaker {
