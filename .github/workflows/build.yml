@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  build:
+  build-windows:
     runs-on: windows-latest
 
     steps:
@@ -50,10 +50,58 @@ jobs:
           path: CorpoDrone-windows-x64.zip
           retention-days: 30
 
-      # On tagged releases (v*), also create a GitHub Release with the zip attached
       - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
           files: CorpoDrone-windows-x64.zip
+          generate_release_notes: true
+
+  build-macos:
+    runs-on: macos-14  # Apple Silicon (M1/M2)
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust nightly
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build audio-capture
+        run: cargo build --release -p audio-capture
+
+      - name: Build Tauri app
+        run: cargo build --release -p corpo-drone
+
+      - name: Package zip
+        run: |
+          NAME="CorpoDrone-macos-arm64"
+          mkdir "$NAME"
+
+          cp target/release/corpo-drone  "$NAME/"
+          cp target/release/audio-capture "$NAME/"
+          cp config.toml                  "$NAME/"
+          cp setup.ps1                    "$NAME/"
+          cp .env.example                 "$NAME/"
+          cp -r pipeline                  "$NAME/"
+
+          zip -r "$NAME.zip" "$NAME"
+          echo "Created $NAME.zip"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: CorpoDrone-macos-arm64
+          path: CorpoDrone-macos-arm64.zip
+          retention-days: 30
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: CorpoDrone-macos-arm64.zip
           generate_release_notes: true

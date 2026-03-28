@@ -2,7 +2,7 @@
 
 Capture audio from your microphone and speakers simultaneously, transcribe with Whisper, identify who's talking with speaker diarization, and summarize the full session with a local LLM, all displayed in a desktop UI.
 
-![Platform](https://img.shields.io/badge/platform-Windows-blue)
+![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
 <img width="1238" height="1069" alt="image" src="https://github.com/user-attachments/assets/0557b96e-1c64-4365-92da-ef4978b4145c" />
@@ -10,23 +10,23 @@ Capture audio from your microphone and speakers simultaneously, transcribe with 
 
 ## Features
 
-- **Dual audio capture**: mic input and loopback (speaker output) captured simultaneously via WASAPI
+- **Dual audio capture**: mic input and loopback (speaker output) captured simultaneously
 - **Real-time transcription**: sliding window Whisper transcription with word-level timestamps
 - **Speaker diarization**: PyAnnote 3.1 assigns speaker labels to each segment
 - **Persistent speaker identities**: ECAPA-TDNN embeddings match speakers across sessions; enroll names for future recognition
 - **Session summary**: full audio re-transcribed at session end, then summarized by a local Ollama LLM
 - **Live UI**: Tauri desktop app with transcript panel, speaker sidebar, and log drawer
+- **Apple Silicon acceleration**: uses mlx-whisper on M-series Macs for fast on-device transcription via Metal
 
 ## Architecture
 
 <img width="1176" height="415" alt="image" src="https://github.com/user-attachments/assets/6d48aa17-afd3-484c-bc95-100fc8b20c67" />
 
-
-**IPC**: Tauri spawns `audio-capture.exe` and `pipeline.py` as child processes. Audio flows over a Windows named pipe (`\\.\pipe\corpodrone-audio`) as framed binary. Transcript segments and commands flow as JSON lines over a second pipe and stdin/stdout.
+**IPC**: Tauri spawns `audio-capture` and `pipeline.py` as child processes. Audio flows over a named pipe (Windows) or POSIX FIFO (macOS) as framed binary. Transcript segments and commands flow as JSON lines over a second pipe and stdin/stdout.
 
 ## Requirements
 
-- Windows 10/11
+- Windows 10/11 or macOS (Apple Silicon recommended)
 - [Rust + cargo](https://rustup.rs)
 - Python 3.10–3.12
 - [Node.js](https://nodejs.org) (for Tauri CLI)
@@ -34,6 +34,12 @@ Capture audio from your microphone and speakers simultaneously, transcribe with 
 - A HuggingFace account with access accepted for both:
   - [pyannote/speaker-diarization-3.1](https://huggingface.co/pyannote/speaker-diarization-3.1)
   - [pyannote/segmentation-3.0](https://huggingface.co/pyannote/segmentation-3.0) (used internally by the diarization pipeline)
+
+### macOS additional requirements
+
+- **Screen Recording permission** granted to your terminal app (for loopback capture via ScreenCaptureKit)
+- **Microphone permission** granted to your terminal app
+- [PowerShell](https://github.com/PowerShell/PowerShell) (`brew install --cask powershell`) to run `setup.ps1`
 
 ## Setup
 
@@ -57,16 +63,22 @@ Edit `config.toml` to adjust the Whisper model size, speaker limits, Ollama mode
 
 ### 3. Python environment
 
+Use the provided setup script (works on both Windows and macOS):
+
 ```powershell
-python -m venv pipeline\.venv
-pipeline\.venv\Scripts\activate
-pip install -r pipeline\requirements.txt
+./setup.ps1
 ```
 
-Or use the provided setup script:
+Or manually:
 
-```powershell
-.\setup.ps1
+```bash
+python -m venv .venv
+# Windows:
+.venv\Scripts\activate
+# macOS:
+source .venv/bin/activate
+
+pip install -r pipeline/requirements.txt
 ```
 
 ### 4. Pull Ollama model
@@ -102,7 +114,7 @@ cargo tauri build
 | `python.summarize` | `true` | Generate LLM summary at session end |
 | `python.ollama_model` | `mistral` | Ollama model for summarization |
 | `python.ollama_host` | `http://localhost:11434` | Ollama API endpoint |
-| `server.python_exe` | `.venv\Scripts\python.exe` | Python interpreter path |
+| `server.python_exe` | `.venv/Scripts/python.exe` (Win) / `.venv/bin/python` (mac) | Python interpreter path |
 
 ## Speaker Database
 
@@ -115,9 +127,11 @@ To reset the database, delete `speakers_db.json`.
 | Component | Technology |
 |-----------|-----------|
 | Desktop framework | [Tauri 2](https://tauri.app) (Rust) |
-| Audio capture | [WASAPI](https://learn.microsoft.com/en-us/windows/win32/coreaudio/wasapi) via `wasapi` crate |
+| Audio capture (Windows) | [WASAPI](https://learn.microsoft.com/en-us/windows/win32/coreaudio/wasapi) via `wasapi` crate |
+| Audio capture (macOS) | [ScreenCaptureKit](https://developer.apple.com/documentation/screencapturekit) (loopback) + [cpal](https://github.com/RustAudio/cpal) / CoreAudio (mic) |
 | Audio resampling | [Rubato](https://github.com/HEnquist/rubato) |
-| Transcription | [faster-whisper](https://github.com/SYSTRAN/faster-whisper) + [WhisperX](https://github.com/m-bain/whisperX) |
+| Transcription (Apple Silicon) | [mlx-whisper](https://github.com/ml-explore/mlx-examples/tree/main/whisper) — runs on Metal via MLX |
+| Transcription (other) | [faster-whisper](https://github.com/SYSTRAN/faster-whisper) + [WhisperX](https://github.com/m-bain/whisperX) |
 | Diarization | [PyAnnote 3.1](https://github.com/pyannote/pyannote-audio) |
 | Speaker embeddings | [SpeechBrain ECAPA-TDNN](https://huggingface.co/speechbrain/spkrec-ecapa-voxceleb) |
 | Summarization | [Ollama](https://ollama.com) |
