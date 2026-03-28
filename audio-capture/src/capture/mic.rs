@@ -47,10 +47,17 @@ pub fn run(tx: Sender<AudioChunk>, _chunk_ms: u32) -> Result<()> {
     let mut accumulated: Vec<f32> = Vec::new();
     let stopped = Arc::new(AtomicBool::new(false));
     let stopped_cb = stopped.clone();
+    let first_cb = Arc::new(AtomicBool::new(false));
+    let first_cb2 = first_cb.clone();
 
     let stream = device.build_input_stream(
         &config.into(),
         move |data: &[f32], _: &cpal::InputCallbackInfo| {
+            if !first_cb2.swap(true, Ordering::Relaxed) {
+                tracing::info!("Mic: first audio callback ({} frames, non-zero={})",
+                    data.len(),
+                    data.iter().any(|&s| s != 0.0));
+            }
             match resampler.process(data) {
                 Ok(resampled) => {
                     accumulated.extend_from_slice(&resampled);
