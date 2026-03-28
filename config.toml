@@ -27,11 +27,4 @@ summarize_model = "medium"
 ollama_model = "mistral"
 ollama_host = "http://localhost:11434"
 
-# Named pipes (must match Rust side)
-audio_pipe = '\\.\pipe\corpodrone-audio'
-transcript_pipe = '\\.\pipe\corpodrone-transcript'
-
 [server]
-# Python executable — points at the venv
-python_exe = '.venv\Scripts\python.exe'
-python_script = 'pipeline\pipeline.py'

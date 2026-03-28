@@ -9,10 +9,17 @@ Write-Host "=== CorpoDrone Setup ===" -ForegroundColor Cyan
 # ── Find Python 3.11 or 3.12 ────────────────────────────────────────────────
 $pyExe = $null
 foreach ($ver in @("3.12", "3.11")) {
-    try {
-        & py "-$ver" --version 2>&1 | Out-Null
-        if ($LASTEXITCODE -eq 0) { $pyExe = "py -$ver"; break }
-    } catch {}
+    # Try Windows Python Launcher first, then direct python3.X (macOS/Linux)
+    foreach ($candidate in @("py -$ver", "python$ver", "python3.$($ver.Split('.')[1])")) {
+        try {
+            $parts = $candidate -split ' '
+            $cmd = $parts[0]
+            $extraArgs = if ($parts.Length -gt 1) { $parts[1..($parts.Length-1)] } else { @() }
+            & $cmd ($extraArgs + @("--version")) 2>&1 | Out-Null
+            if ($LASTEXITCODE -eq 0) { $pyExe = $candidate; break }
+        } catch {}
+    }
+    if ($pyExe) { break }
 }
 if (-not $pyExe) {
     Write-Host "ERROR: Python 3.11 or 3.12 not found." -ForegroundColor Red
@@ -30,23 +37,37 @@ if (Test-Path ".venv") {
     if ($LASTEXITCODE -ne 0) { Write-Host "venv creation failed" -ForegroundColor Red; exit 1 }
 }
 
-$pip    = ".\.venv\Scripts\pip.exe"
-$python = ".\.venv\Scripts\python.exe"
+if ($IsWindows) {
+    $pip    = ".\.venv\Scripts\pip.exe"
+    $python = ".\.venv\Scripts\python.exe"
+} else {
+    $pip    = "./.venv/bin/pip"
+    $python = "./.venv/bin/python"
+}
 
 # ── [2/3] Install dependencies ───────────────────────────────────────────────
 Write-Host "`n[2/3] Installing dependencies (this may take a while)..." -ForegroundColor Yellow
 
-Write-Host "  Installing PyTorch with CUDA 12.1 support..." -ForegroundColor Gray
-& $pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu121
-if ($LASTEXITCODE -ne 0) { Write-Host "PyTorch install failed" -ForegroundColor Red; exit 1 }
+if ($IsWindows) {
+    Write-Host "  Installing PyTorch with CUDA 12.1 support..." -ForegroundColor Gray
+    & $pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu121
+    if ($LASTEXITCODE -ne 0) { Write-Host "PyTorch install failed" -ForegroundColor Red; exit 1 }
+} else {
+    Write-Host "  Installing PyTorch (CPU/MPS build for macOS)..." -ForegroundColor Gray
+    & $pip install torch torchaudio
+    if ($LASTEXITCODE -ne 0) { Write-Host "PyTorch install failed" -ForegroundColor Red; exit 1 }
+}
 
 Write-Host "  Installing pipeline dependencies..." -ForegroundColor Gray
-& $pip install -r pipeline\requirements.txt
+$reqFile = if ($IsWindows) { "pipeline\requirements.txt" } else { "pipeline/requirements.txt" }
+& $pip install -r $reqFile
 if ($LASTEXITCODE -ne 0) { Write-Host "Dependency install failed" -ForegroundColor Red; exit 1 }
 
-# Re-pin the CUDA torch build in case requirements.txt pulled in the CPU wheel
-& $pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu121 --force-reinstall --no-deps
-if ($LASTEXITCODE -ne 0) { Write-Host "PyTorch re-pin failed" -ForegroundColor Red; exit 1 }
+# Re-pin the correct torch build in case requirements.txt overrode it
+if ($IsWindows) {
+    & $pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu121 --force-reinstall --no-deps
+    if ($LASTEXITCODE -ne 0) { Write-Host "PyTorch re-pin failed" -ForegroundColor Red; exit 1 }
+}
 
 $cudaOk = & $python -c "import torch; print(torch.cuda.is_available())" 2>&1
 Write-Host "  CUDA available: $cudaOk" -ForegroundColor $(if ($cudaOk -eq "True") { "Green" } else { "Yellow" })

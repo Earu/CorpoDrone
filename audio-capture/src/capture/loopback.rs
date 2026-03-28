@@ -1,8 +1,7 @@
 use anyhow::Result;
 use crossbeam_channel::Sender;
 
-use super::resampler::ToWhisper;
-use crate::ipc::{AudioChunk, AudioSource};
+use crate::ipc::AudioChunk;
 
 const CHUNK_FRAMES: usize = 1600; // 100ms at 16kHz
 
@@ -18,7 +17,6 @@ fn current_time_us() -> u64 {
 
 #[cfg(target_os = "macos")]
 mod macos_sck {
-    use std::ffi::c_void;
     use std::sync::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex,
@@ -27,105 +25,21 @@ mod macos_sck {
     use crossbeam_channel::Sender;
     use tracing::info;
 
+    use core_media_rs::cm_sample_buffer::CMSampleBuffer;
     use screencapturekit::{
-        cm_sample_buffer::CMSampleBuffer,
-        sc_content_filter::{InitParams, SCContentFilter},
-        sc_error_handler::StreamErrorHandler,
-        sc_output_handler::{SCStreamOutput, StreamType},
-        sc_shareable_content::SCShareableContent,
-        sc_stream::SCStream,
-        sc_stream_configuration::SCStreamConfiguration,
+        shareable_content::SCShareableContent,
+        stream::{
+            configuration::SCStreamConfiguration,
+            content_filter::SCContentFilter,
+            output_trait::SCStreamOutputTrait,
+            output_type::SCStreamOutputType,
+            SCStream,
+        },
     };
 
     use crate::capture::resampler::ToWhisper;
     use crate::ipc::{AudioChunk, AudioSource};
     use super::{CHUNK_FRAMES, current_time_us};
-
-    // CoreMedia FFI — extract raw PCM from a CMSampleBuffer.
-    // SCStream delivers Float32 LPCM; we ask for mono 48kHz so there is
-    // exactly one AudioBuffer per sample buffer.
-    #[repr(C)]
-    struct RawAudioBuffer {
-        number_channels: u32,
-        data_byte_size: u32,
-        data: *mut c_void,
-    }
-
-    // Fixed-size AudioBufferList sized for up to 8 channels
-    #[repr(C)]
-    struct RawAudioBufferList {
-        number_buffers: u32,
-        buffers: [RawAudioBuffer; 8],
-    }
-
-    #[link(name = "CoreMedia", kind = "framework")]
-    extern "C" {
-        fn CMSampleBufferGetAudioBufferListWithRetainedBlockBuffer(
-            sbuf: *mut c_void,
-            buffer_list_size_needed_out: *mut usize,
-            buffer_list_out: *mut RawAudioBufferList,
-            buffer_list_size: usize,
-            block_buf_structure_allocator: *const c_void,
-            block_buf_block_allocator: *const c_void,
-            flags: u32,
-            block_buffer_out: *mut *mut c_void,
-        ) -> i32;
-    }
-
-    #[link(name = "CoreFoundation", kind = "framework")]
-    extern "C" {
-        fn CFRelease(cf: *const c_void);
-    }
-
-    // Extract f32 PCM samples from a CMSampleBuffer.
-    //
-    // screencapturekit's CMSampleBuffer is a transparent newtype around the raw
-    // CMSampleBufferRef pointer, so reading the first pointer-sized word gives
-    // us the underlying ObjC object reference we can pass to CoreMedia C APIs.
-    //
-    // Safety: `sample_buffer` must be alive for the duration of this call.
-    unsafe fn extract_pcm(sample_buffer: &CMSampleBuffer) -> Vec<f32> {
-        let raw_ref: *mut c_void =
-            std::mem::transmute_copy::<CMSampleBuffer, *mut c_void>(sample_buffer);
-        if raw_ref.is_null() {
-            return Vec::new();
-        }
-
-        let mut list = std::mem::MaybeUninit::<RawAudioBufferList>::uninit();
-        let mut block_buf: *mut c_void = std::ptr::null_mut();
-
-        let status = CMSampleBufferGetAudioBufferListWithRetainedBlockBuffer(
-            raw_ref,
-            std::ptr::null_mut(),
-            list.as_mut_ptr(),
-            std::mem::size_of::<RawAudioBufferList>(),
-            std::ptr::null(),
-            std::ptr::null(),
-            0,
-            &mut block_buf,
-        );
-
-        if status != 0 {
-            return Vec::new();
-        }
-
-        let list = list.assume_init();
-        let mut out = Vec::new();
-
-        for i in 0..(list.number_buffers.min(8) as usize) {
-            let b = &list.buffers[i];
-            if b.data.is_null() || b.data_byte_size == 0 {
-                continue;
-            }
-            let n = b.data_byte_size as usize / std::mem::size_of::<f32>();
-            out.extend_from_slice(std::slice::from_raw_parts(b.data as *const f32, n));
-        }
-
-        if !block_buf.is_null() {
-            CFRelease(block_buf);
-        }
-        out
-    }
 
     struct CaptureState {
         resampler: ToWhisper,
@@ -138,20 +52,35 @@ mod macos_sck {
         state: Arc<Mutex<CaptureState>>,
     }
 
-    struct ErrorHandler;
-    impl StreamErrorHandler for ErrorHandler {
-        fn on_error(&self) {
-            tracing::error!("SCStream error");
-        }
-    }
-
-    impl SCStreamOutput for AudioOutput {
-        fn did_output_sample_buffer(&self, sample_buffer: CMSampleBuffer, of_type: StreamType) {
-            if of_type != StreamType::Audio {
+    impl SCStreamOutputTrait for AudioOutput {
+        fn did_output_sample_buffer(
+            &self,
+            sample_buffer: CMSampleBuffer,
+            of_type: SCStreamOutputType,
+        ) {
+            if of_type != SCStreamOutputType::Audio {
                 return;
             }
 
-            let pcm = unsafe { extract_pcm(&sample_buffer) };
+            let audio_buf_list = match sample_buffer.get_audio_buffer_list() {
+                Ok(list) => list,
+                Err(e) => {
+                    tracing::warn!("Loopback: failed to get audio buffer list: {e:?}");
+                    return;
+                }
+            };
+
+            let mut pcm: Vec<f32> = Vec::new();
+            for i in 0..audio_buf_list.num_buffers() {
+                if let Some(buf) = audio_buf_list.get(i) {
+                    let bytes = buf.data();
+                    let samples = bytes
+                        .chunks_exact(4)
+                        .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]));
+                    pcm.extend(samples);
+                }
+            }
+
             if pcm.is_empty() {
                 return;
             }
@@ -189,38 +118,41 @@ mod macos_sck {
             stopped: stopped.clone(),
         }));
 
-        let content = SCShareableContent::current();
-        let display = content
-            .displays
-            .first()
+        let mut displays = SCShareableContent::get()
+            .map_err(|e| anyhow::anyhow!("SCShareableContent::get failed: {e:?}"))?
+            .displays();
+        let display = displays
+            .first_mut()
             .ok_or_else(|| anyhow::anyhow!(
                 "No display found — ensure screen recording permission is granted"
             ))?;
 
         info!("Loopback capture: SCStream on display");
 
-        let filter = SCContentFilter::new(InitParams::Display(display.clone()));
-        let config = SCStreamConfiguration {
-            width: 2,
-            height: 2,
-            captures_audio: true,
-            excludes_current_process_audio: false,
-            // mono 48kHz → ToWhisper resamples to 16kHz
-            sample_rate: 48000,
-            channel_count: 1,
-            ..Default::default()
-        };
+        // Minimal 2×2 video frame; we only care about audio.
+        let config = SCStreamConfiguration::new()
+            .set_captures_audio(true)
+            .map_err(|e| anyhow::anyhow!("set_captures_audio: {e:?}"))?
+            .set_excludes_current_process_audio(false)
+            .map_err(|e| anyhow::anyhow!("set_excludes_current_process_audio: {e:?}"))?
+            .set_sample_rate(48_000)
+            .map_err(|e| anyhow::anyhow!("set_sample_rate: {e:?}"))?
+            .set_channel_count(1)
+            .map_err(|e| anyhow::anyhow!("set_channel_count: {e:?}"))?;
 
-        let mut stream = SCStream::new(filter, config, ErrorHandler);
-        stream.add_output(AudioOutput { state }, StreamType::Audio);
-        stream.start_capture()?;
+        let filter = SCContentFilter::new().with_display_excluding_windows(display, &[]);
+        let mut stream = SCStream::new(&filter, &config);
+        stream.add_output_handler(AudioOutput { state }, SCStreamOutputType::Audio);
+        stream
+            .start_capture()
+            .map_err(|e| anyhow::anyhow!("start_capture: {e:?}"))?;
         info!("Loopback capture started (ScreenCaptureKit)");
 
         while !stopped.load(Ordering::Relaxed) {
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
 
-        let _ = stream.stop_capture();
+        stream.stop_capture().ok();
         Ok(())
     }
 }
