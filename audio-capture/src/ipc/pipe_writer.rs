@@ -70,17 +70,21 @@ pub fn run(pipe_path: &str, rx: Receiver<AudioChunk>) -> Result<()> {
     use std::ffi::CString;
     use std::io::Write;
 
-    // Clean up any stale file from a previous run
-    let _ = std::fs::remove_file(pipe_path);
-
-    // Create the FIFO
+    // Create the FIFO. If one already exists (stale from a crashed previous run),
+    // reuse it — do NOT remove it first. Removing it would cause a deadlock: Python
+    // may already be blocking on open(O_RDONLY) against the old inode, and after
+    // remove+mkfifo audio-capture would open a *new* inode. They'd wait on different
+    // inodes forever. By reusing the existing FIFO, audio-capture's write-open
+    // unblocks Python's pending read-open on the same inode.
     let c_path = CString::new(pipe_path)?;
     let ret = unsafe { libc::mkfifo(c_path.as_ptr(), 0o644) };
     if ret < 0 {
-        anyhow::bail!(
-            "mkfifo({pipe_path}) failed: {}",
-            std::io::Error::last_os_error()
-        );
+        let err = std::io::Error::last_os_error();
+        if err.raw_os_error() != Some(libc::EEXIST) {
+            anyhow::bail!("mkfifo({pipe_path}) failed: {}", err);
+        }
+        // EEXIST: stale FIFO from a previous run — reuse it
+        info!("Reusing existing audio FIFO: {pipe_path}");
     }
 
     info!("Waiting for Python to connect to audio FIFO: {pipe_path}");
