@@ -16,6 +16,9 @@ struct Config {
     python_exe: String,
     python_script: String,
     speakers_file: String,
+    ollama_host: String,
+    ollama_model: String,
+    summarize: bool,
 }
 
 /// Holds Python's stdin so Tauri commands can send JSON-line control messages.
@@ -56,6 +59,9 @@ fn load_config() -> Config {
         python_exe,
         python_script,
         speakers_file: "speakers.json".to_string(),
+        ollama_host: "http://localhost:11434".to_string(),
+        ollama_model: "mistral".to_string(),
+        summarize: true,
     };
 
     let Ok(text) = std::fs::read_to_string("config.toml") else {
@@ -86,6 +92,9 @@ fn load_config() -> Config {
                     "transcript_pipe" => cfg.transcript_pipe = v.to_string(),
                     "audio_pipe" => cfg.audio_pipe = v.to_string(),
                     "speakers_file" => cfg.speakers_file = v.to_string(),
+                    "ollama_host" => cfg.ollama_host = v.to_string(),
+                    "ollama_model" => cfg.ollama_model = v.to_string(),
+                    "summarize" => cfg.summarize = v == "true",
                     _ => {}
                 }
             }
@@ -96,10 +105,31 @@ fn load_config() -> Config {
 
 // ---- Log helpers ----
 
+/// Forwards a raw line (already JSON from a subprocess) to a log pane in the UI.
 fn emit_log(app: &AppHandle, process: &str, line: impl Into<String>) {
     let _ = app.emit("log-line", serde_json::json!({
         "process": process,
         "line": line.into(),
+    }));
+}
+
+/// Emits a structured system log to the "system" pane in the UI.
+/// Uses the same JSON shape as structlog so `formatLogLine` renders it consistently.
+fn emit_system(app: &AppHandle, level: &str, event: impl Into<String>) {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let ts = format!("{:02}:{:02}:{:02}", secs / 3600 % 24, secs / 60 % 60, secs % 60);
+    let json_line = serde_json::json!({
+        "level": level,
+        "timestamp": ts,
+        "event": event.into(),
+    }).to_string();
+    let _ = app.emit("log-line", serde_json::json!({
+        "process": "system",
+        "line": json_line,
     }));
 }
 
@@ -166,8 +196,7 @@ async fn start_recording(
 
     let pid = child.id().unwrap_or(0);
     RECORDING.store(true, Ordering::Relaxed);
-    emit_log(&app, "system", format!("audio-capture started (pid={pid})"));
-    tracing::info!("audio-capture started (pid={pid})");
+    emit_system(&app, "info", format!("audio_capture_started pid={pid}"));
 
     if let Some(stdout) = child.stdout.take() {
         let app_c = app.clone();
@@ -181,15 +210,14 @@ async fn start_recording(
     tokio::spawn(async move {
         let _ = child.wait().await;
         RECORDING.store(false, Ordering::Relaxed);
-        emit_log(&app, "system", "audio-capture stopped");
-        tracing::info!("audio-capture process exited");
+        emit_system(&app, "info", "audio_capture_stopped");
     });
 
     Ok(serde_json::json!({ "ok": true }))
 }
 
 #[tauri::command]
-async fn stop_recording() -> Result<serde_json::Value, String> {
+async fn stop_recording(app: AppHandle) -> Result<serde_json::Value, String> {
     if !RECORDING.load(Ordering::Relaxed) {
         return Err("Not recording".to_string());
     }
@@ -209,7 +237,93 @@ async fn stop_recording() -> Result<serde_json::Value, String> {
     RECORDING.store(false, Ordering::Relaxed);
     MUTED.store(false, Ordering::Relaxed);
     let _ = std::fs::remove_file(".mic_muted");
-    tracing::info!("Recording stopped");
+    emit_system(&app, "info", "recording_stopped");
+    Ok(serde_json::json!({ "ok": true }))
+}
+
+#[tauri::command]
+async fn get_ollama_config(
+    cfg: State<'_, Arc<Config>>,
+) -> Result<serde_json::Value, String> {
+    Ok(serde_json::json!({
+        "host": cfg.ollama_host,
+        "model": cfg.ollama_model,
+        "summarize": cfg.summarize,
+    }))
+}
+
+#[tauri::command]
+async fn check_ollama_status(
+    cfg: State<'_, Arc<Config>>,
+) -> Result<serde_json::Value, String> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(3))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let url = format!("{}/api/tags", cfg.ollama_host.trim_end_matches('/'));
+    let res = match client.get(&url).send().await {
+        Ok(r) if r.status().is_success() => r,
+        _ => return Ok(serde_json::json!({ "running": false, "has_model": false })),
+    };
+    let body: serde_json::Value = res.json().await.unwrap_or_default();
+    let model = &cfg.ollama_model;
+    let has_model = body["models"]
+        .as_array()
+        .map(|arr| {
+            arr.iter().any(|m| {
+                m["name"].as_str().map(|n| n == model || n.starts_with(&format!("{model}:"))).unwrap_or(false)
+            })
+        })
+        .unwrap_or(false);
+    Ok(serde_json::json!({ "running": true, "has_model": has_model }))
+}
+
+#[tauri::command]
+async fn start_ollama_service(app: AppHandle) -> Result<serde_json::Value, String> {
+    emit_system(&app, "info", "starting_ollama_service");
+    // Launch `ollama serve` as a fully detached process (not a child of ours).
+    // On Windows: `cmd /c start "" ollama serve` — the shell's START command
+    // creates an independent process; cmd exits immediately.
+    // On Unix: `sh -c "ollama serve &"` — shell backgrounds and exits.
+    #[cfg(windows)]
+    let result = {
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        tokio::process::Command::new("cmd")
+            .args(["/c", "start", "", "ollama", "serve"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn()
+    };
+    #[cfg(not(windows))]
+    let result = tokio::process::Command::new("sh")
+        .args(["-c", "ollama serve &"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+    match result {
+        Ok(_) => Ok(serde_json::json!({ "ok": true })),
+        Err(e) => Ok(serde_json::json!({ "ok": false, "error": e.to_string() })),
+    }
+}
+
+#[tauri::command]
+async fn kill_pipeline(app: AppHandle) -> Result<serde_json::Value, String> {
+    let pid = PYTHON_PID.load(Ordering::Relaxed);
+    if pid == 0 {
+        return Ok(serde_json::json!({ "ok": false, "reason": "no pipeline running" }));
+    }
+    emit_system(&app, "warning", format!("killing_pipeline_by_user pid={pid}"));
+    #[cfg(windows)]
+    let _ = tokio::process::Command::new("taskkill")
+        .args(["/F", "/PID", &pid.to_string()])
+        .output()
+        .await;
+    #[cfg(not(windows))]
+    let _ = tokio::process::Command::new("kill")
+        .args(["-9", &pid.to_string()])
+        .output()
+        .await;
     Ok(serde_json::json!({ "ok": true }))
 }
 
@@ -343,20 +457,20 @@ async fn run_pipe_reader(pipe_path: String, app: AppHandle) {
         {
             Ok(s) => s,
             Err(e) => {
-                tracing::warn!("Failed to create transcript pipe: {e}");
+                emit_system(&app, "warning", format!("transcript_pipe_create_failed error={e}"));
                 tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
                 continue;
             }
         };
 
-        tracing::info!("Waiting for Python to connect to transcript pipe...");
+        emit_system(&app, "info", "waiting_for_pipeline_transcript_pipe");
         if let Err(e) = server.connect().await {
-            tracing::warn!("Transcript pipe connect error: {e}");
+            emit_system(&app, "warning", format!("transcript_pipe_connect_error error={e}"));
             tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
             continue;
         }
 
-        tracing::info!("Python connected to transcript pipe");
+        emit_system(&app, "info", "pipeline_connected_transcript_pipe");
         let mut reader = BufReader::new(server);
         let mut line = String::new();
 
@@ -364,7 +478,7 @@ async fn run_pipe_reader(pipe_path: String, app: AppHandle) {
             line.clear();
             match reader.read_line(&mut line).await {
                 Ok(0) => {
-                    tracing::info!("Transcript pipe closed by Python, reconnecting...");
+                    emit_system(&app, "info", "transcript_pipe_closed_reconnecting");
                     break;
                 }
                 Ok(_) => {
@@ -374,11 +488,11 @@ async fn run_pipe_reader(pipe_path: String, app: AppHandle) {
                     }
                     match serde_json::from_str::<serde_json::Value>(trimmed) {
                         Ok(msg) => { let _ = app.emit("pipeline-event", msg); }
-                        Err(e) => tracing::warn!("Invalid JSON from Python pipeline: {e}"),
+                        Err(e) => emit_system(&app, "warning", format!("transcript_pipe_invalid_json error={e}")),
                     }
                 }
                 Err(e) => {
-                    tracing::warn!("Transcript pipe read error: {e}");
+                    emit_system(&app, "warning", format!("transcript_pipe_read_error error={e}"));
                     break;
                 }
             }
@@ -399,7 +513,7 @@ async fn run_pipe_reader(pipe_path: String, app: AppHandle) {
         let _ = std::fs::remove_file(&pipe_path);
         let _ = std::process::Command::new("mkfifo").arg(&pipe_path).status();
 
-        tracing::info!("Waiting for Python to connect to transcript pipe...");
+        emit_system(&app, "info", "waiting_for_pipeline_transcript_pipe");
 
         // Opening a FIFO for reading blocks until the writer (Python) opens its end.
         // Run this in a blocking thread so we don't stall the async runtime.
@@ -411,17 +525,17 @@ async fn run_pipe_reader(pipe_path: String, app: AppHandle) {
         {
             Ok(Ok(f)) => f,
             Ok(Err(e)) => {
-                tracing::warn!("Failed to open transcript FIFO: {e}");
+                emit_system(&app, "warning", format!("transcript_fifo_open_failed error={e}"));
                 tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
                 continue;
             }
             Err(e) => {
-                tracing::warn!("spawn_blocking error: {e}");
+                emit_system(&app, "warning", format!("transcript_fifo_spawn_blocking_error error={e}"));
                 break;
             }
         };
 
-        tracing::info!("Python connected to transcript pipe");
+        emit_system(&app, "info", "pipeline_connected_transcript_pipe");
 
         let async_file = tokio::fs::File::from_std(file);
         let mut reader = BufReader::new(async_file);
@@ -431,7 +545,7 @@ async fn run_pipe_reader(pipe_path: String, app: AppHandle) {
             line.clear();
             match reader.read_line(&mut line).await {
                 Ok(0) => {
-                    tracing::info!("Transcript pipe closed by Python, reconnecting...");
+                    emit_system(&app, "info", "transcript_pipe_closed_reconnecting");
                     break;
                 }
                 Ok(_) => {
@@ -439,12 +553,12 @@ async fn run_pipe_reader(pipe_path: String, app: AppHandle) {
                     if !trimmed.is_empty() {
                         match serde_json::from_str::<serde_json::Value>(trimmed) {
                             Ok(msg) => { let _ = app.emit("pipeline-event", msg); }
-                            Err(e) => tracing::warn!("Invalid JSON from Python pipeline: {e}"),
+                            Err(e) => emit_system(&app, "warning", format!("transcript_pipe_invalid_json error={e}")),
                         }
                     }
                 }
                 Err(e) => {
-                    tracing::warn!("Transcript pipe read error: {e}");
+                    emit_system(&app, "warning", format!("transcript_pipe_read_error error={e}"));
                     break;
                 }
             }
@@ -463,8 +577,7 @@ async fn spawn_python(cfg: &Config, stdin_state: Arc<PythonStdin>, app: AppHandl
     }
 
     loop {
-        tracing::info!("Spawning Python pipeline: {} {}", cfg.python_exe, script.display());
-        emit_log(&app, "system", format!("Spawning Python pipeline: {}", script.display()));
+        emit_system(&app, "info", format!("spawning_python_pipeline script={}", script.display()));
 
         let mut cmd = tokio::process::Command::new(&cfg.python_exe);
         cmd.arg(&cfg.python_script);
@@ -497,8 +610,7 @@ async fn spawn_python(cfg: &Config, stdin_state: Arc<PythonStdin>, app: AppHandl
 
                 if let Some(pid) = child.id() {
                     PYTHON_PID.store(pid, Ordering::Relaxed);
-                    emit_log(&app, "system", format!("Python pipeline started (pid={pid})"));
-                    tracing::info!("Python pipeline pid={pid}");
+                    emit_system(&app, "info", format!("python_pipeline_started pid={pid}"));
                 }
 
                 let _ = child.wait().await;
@@ -508,13 +620,19 @@ async fn spawn_python(cfg: &Config, stdin_state: Arc<PythonStdin>, app: AppHandl
                     *guard = None;
                 }
 
-                emit_log(&app, "system", "Python pipeline exited");
-                tracing::info!("Python pipeline exited");
+                emit_system(&app, "info", "python_pipeline_exited");
+
+                // Tell the frontend so it can recover from any stuck processing screen.
+                // Guarded so we don't fire this during intentional app shutdown.
+                if !SHUTTING_DOWN.load(Ordering::Relaxed) {
+                    let _ = app.emit("pipeline-event", serde_json::json!({
+                        "type": "status",
+                        "state": "pipeline_crashed",
+                    }));
+                }
             }
             Err(e) => {
-                let msg = format!("Failed to spawn Python pipeline: {e}");
-                emit_log(&app, "system", &msg);
-                tracing::warn!("{msg}");
+                emit_system(&app, "warning", format!("python_pipeline_spawn_failed error={e}"));
             }
         }
 
@@ -522,8 +640,7 @@ async fn spawn_python(cfg: &Config, stdin_state: Arc<PythonStdin>, app: AppHandl
             break;
         }
 
-        emit_log(&app, "system", "Restarting Python pipeline in 1s...");
-        tracing::info!("Restarting Python pipeline in 1s...");
+        emit_system(&app, "info", "python_pipeline_restarting delay=1s");
         tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
 
         if SHUTTING_DOWN.load(Ordering::Relaxed) {
@@ -541,7 +658,6 @@ fn kill_subprocesses() {
         let _ = std::process::Command::new("taskkill")
             .args(["/F", "/PID", &pid.to_string()])
             .output();
-        tracing::info!("Killed Python pipeline (pid={pid})");
     }
     let _ = std::process::Command::new("taskkill")
         .args(["/F", "/IM", "audio-capture.exe"])
@@ -556,7 +672,6 @@ fn kill_subprocesses() {
         let _ = std::process::Command::new("kill")
             .args(["-9", &pid.to_string()])
             .output();
-        tracing::info!("Killed Python pipeline (pid={pid})");
     }
     let _ = std::process::Command::new("pkill")
         .args(["-f", "audio-capture"])
@@ -597,6 +712,10 @@ pub fn run() {
             get_status,
             start_recording,
             stop_recording,
+            kill_pipeline,
+            get_ollama_config,
+            check_ollama_status,
+            start_ollama_service,
             update_speaker,
             set_pipeline_mode,
             set_mute,

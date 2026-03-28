@@ -33,7 +33,7 @@
       </div>
       <div class="header-right">
         <button id="btn-mute" onclick="toggleMute()" class="btn-mute">MIC ON</button>
-        <button id="btn-stop" onclick="stopRecording()">End Session</button>
+        <button id="btn-stop" onclick="confirmEndSession()">End Session</button>
       </div>
     </header>
 
@@ -126,6 +126,50 @@
       <div class="modal-footer">
         <button class="btn-ghost" onclick="skipEnrollment()">Skip All</button>
         <button class="btn-modal-primary" onclick="submitEnrollment()">Done — Continue</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── End session waiting modal ────────────────────────────────────── -->
+  <div id="end-session-modal" class="modal-overlay hidden">
+    <div class="modal">
+      <div class="modal-body end-session-modal-body">
+        <div class="debrief-loader-row">
+          <div class="spinner"></div>
+          <span class="end-session-modal-label">Finishing current transcription step…</span>
+        </div>
+        <p class="end-session-modal-info">
+          Ignoring will skip the current step — the last few seconds may be absent from the live transcript.
+        </p>
+      </div>
+      <div class="modal-footer">
+        <button class="btn-modal-danger" onclick="ignoreAndContinue()">Ignore and continue</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Ollama modal ──────────────────────────────────────────────── -->
+  <div id="ollama-modal" class="modal-overlay hidden">
+    <div class="modal">
+      <div class="modal-header">
+        <div class="modal-title">OLLAMA NOT RUNNING</div>
+        <div class="modal-sub" id="ollama-modal-sub">Ollama is required to generate a debrief summary</div>
+      </div>
+      <div class="modal-body">
+        <p id="ollama-desc" class="end-session-modal-info">
+          Click <strong>Start Ollama</strong> to launch the local Ollama service and continue with the debrief, or skip to view the transcript only.
+        </p>
+        <div id="ollama-starting-row" class="debrief-loader-row hidden">
+          <div class="spinner"></div>
+          <span id="ollama-status-label" class="end-session-modal-label">Starting Ollama…</span>
+        </div>
+        <p id="ollama-timeout-msg" class="end-session-modal-info hidden">
+          Timed out waiting for Ollama. <button class="btn-inline-link" onclick="retryOllama()">Retry</button>
+        </p>
+      </div>
+      <div class="modal-footer">
+        <button class="btn-ghost" id="ollama-skip-btn" onclick="skipOllama()">Skip — no debrief</button>
+        <button class="btn-modal-primary" id="ollama-start-btn" onclick="startOllama()">Start Ollama</button>
       </div>
     </div>
   </div>
