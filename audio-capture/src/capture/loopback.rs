@@ -37,6 +37,8 @@ mod macos_sck {
         },
     };
 
+    use crate::capture::resampler::ToWhisper;
+    use crate::ipc::{AudioChunk, AudioSource};
     use super::{CHUNK_FRAMES, current_time_us};
 
     struct CaptureState {
@@ -44,6 +46,7 @@ mod macos_sck {
         accumulated: Vec<f32>,
         tx: Sender<AudioChunk>,
         stopped: Arc<AtomicBool>,
+        first_cb: bool,
     }
 
     struct AudioOutput {
@@ -84,6 +87,12 @@ mod macos_sck {
             }
 
             let mut s = self.state.lock().unwrap();
+            if s.first_cb {
+                s.first_cb = false;
+                tracing::info!("Loopback: first SCKit audio callback ({} samples, non-zero={})",
+                    pcm.len(),
+                    pcm.iter().any(|&v| v != 0.0));
+            }
             match s.resampler.process(&pcm) {
                 Ok(resampled) => {
                     s.accumulated.extend_from_slice(&resampled);
@@ -114,6 +123,7 @@ mod macos_sck {
             accumulated: Vec::new(),
             tx,
             stopped: stopped.clone(),
+            first_cb: true,
         }));
 
         let mut displays = SCShareableContent::get()
