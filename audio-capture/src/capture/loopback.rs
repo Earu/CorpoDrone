@@ -1,7 +1,7 @@
 use anyhow::Result;
 use crossbeam_channel::Sender;
-
-use crate::ipc::AudioChunk;
+use crate::capture::resampler::ToWhisper;
+use crate::ipc::{AudioChunk, AudioSource};
 
 const CHUNK_FRAMES: usize = 1600; // 100ms at 16kHz
 
@@ -37,8 +37,6 @@ mod macos_sck {
         },
     };
 
-    use crate::capture::resampler::ToWhisper;
-    use crate::ipc::{AudioChunk, AudioSource};
     use super::{CHUNK_FRAMES, current_time_us};
 
     struct CaptureState {
