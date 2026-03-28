@@ -93,16 +93,11 @@ pub fn run(pipe_path: &str, rx: Receiver<AudioChunk>) -> Result<()> {
     let mut file = std::fs::OpenOptions::new().write(true).open(pipe_path)?;
     info!("Python connected to audio pipe");
 
-    let mut chunks_written: u64 = 0;
     for chunk in &rx {
         let encoded = chunk.encode();
         if let Err(e) = file.write_all(&encoded) {
             warn!("Audio pipe write error: {e}");
             break;
-        }
-        chunks_written += 1;
-        if chunks_written == 1 || chunks_written % 100 == 0 {
-            info!("Audio pipe: {chunks_written} chunks written");
         }
     }
 
