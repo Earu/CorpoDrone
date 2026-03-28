@@ -5,11 +5,19 @@ use anyhow::Result;
 use clap::Parser;
 use tracing::info;
 
+fn default_pipe() -> String {
+    if cfg!(windows) {
+        r"\\.\pipe\corpodrone-audio".to_string()
+    } else {
+        "/tmp/corpodrone-audio".to_string()
+    }
+}
+
 #[derive(Parser, Debug)]
 #[command(name = "audio-capture", about = "Captures mic + loopback audio and streams to Python pipeline")]
 struct Args {
-    /// Named pipe path for audio output
-    #[arg(long, default_value = r"\\.\pipe\corpodrone-audio")]
+    /// Named pipe or FIFO path for audio output
+    #[arg(long, default_value_t = default_pipe())]
     pipe: String,
 
     /// Audio chunk duration in milliseconds
@@ -29,11 +37,10 @@ fn main() -> Result<()> {
 
     let (tx, rx) = crossbeam_channel::bounded::<ipc::AudioChunk>(64);
 
-    // Spawn capture threads
     let tx_mic = tx.clone();
     let chunk_ms = args.chunk_ms;
     std::thread::Builder::new()
-        .name("wasapi-mic".into())
+        .name("capture-mic".into())
         .spawn(move || {
             if let Err(e) = capture::mic::run(tx_mic, chunk_ms) {
                 tracing::error!("mic capture error: {e:#}");
@@ -42,7 +49,7 @@ fn main() -> Result<()> {
 
     let tx_loop = tx.clone();
     std::thread::Builder::new()
-        .name("wasapi-loopback".into())
+        .name("capture-loopback".into())
         .spawn(move || {
             if let Err(e) = capture::loopback::run(tx_loop, chunk_ms) {
                 tracing::error!("loopback capture error: {e:#}");
@@ -50,9 +57,6 @@ fn main() -> Result<()> {
         })?;
 
     drop(tx);
-
-    // Write audio chunks to named pipe
     ipc::pipe_writer::run(&args.pipe, rx)?;
-
     Ok(())
 }

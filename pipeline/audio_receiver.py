@@ -1,5 +1,5 @@
 """
-Reads audio chunks from the Windows named pipe written by audio-capture.
+Reads audio chunks from the named pipe / FIFO written by audio-capture.
 
 Wire format per chunk:
   [4 bytes] payload_len  u32 LE
@@ -8,8 +8,9 @@ Wire format per chunk:
   [4 bytes] num_samples  u32 LE
   [num_samples*4 bytes]  f32 LE PCM @ 16kHz mono
 """
-import ctypes
+import os
 import struct
+import sys
 import threading
 import queue
 import time
@@ -20,12 +21,22 @@ import structlog
 
 log = structlog.get_logger(__name__)
 
-_kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+if sys.platform == "win32":
+    import ctypes
+    _kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 
-
-def _wait_pipe(path: str, timeout_ms: int = 5000) -> bool:
-    """Returns True if the pipe becomes available within timeout_ms."""
-    return bool(_kernel32.WaitNamedPipeW(path, timeout_ms))
+    def _wait_pipe(path: str, timeout_ms: int = 5000) -> bool:
+        """Returns True if the Windows named pipe becomes available within timeout_ms."""
+        return bool(_kernel32.WaitNamedPipeW(path, timeout_ms))
+else:
+    def _wait_pipe(path: str, timeout_ms: int = 5000) -> bool:
+        """Returns True if the POSIX FIFO exists within timeout_ms."""
+        deadline = time.monotonic() + timeout_ms / 1000.0
+        while time.monotonic() < deadline:
+            if os.path.exists(path):
+                return True
+            time.sleep(0.05)
+        return False
 
 SOURCE_MIC = 0x01
 SOURCE_LOOPBACK = 0x02

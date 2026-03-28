@@ -12,12 +12,11 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 crossbeam-channel = { workspace = true }
 clap = { workspace = true }
-
-wasapi = "0.16"
 rubato = "0.16"
 bytemuck = "1"
 
 [target.'cfg(windows)'.dependencies]
+wasapi = "0.16"
 windows = { version = "0.59", features = [
     "Win32_Foundation",
     "Win32_System_Com",
@@ -26,3 +25,11 @@ windows = { version = "0.59", features = [
     "Win32_Storage_FileSystem",
     "Win32_Security",
 ] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# Check https://crates.io/crates/screencapturekit for the latest version
+screencapturekit = "0.3"
+cpal = "0.15"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

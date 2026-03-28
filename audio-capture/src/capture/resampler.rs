@@ -4,7 +4,6 @@ use rubato::{FftFixedIn, Resampler};
 /// Converts audio to 16kHz mono f32 PCM as required by Whisper.
 pub struct ToWhisper {
     resampler: Option<FftFixedIn<f32>>,
-    input_rate: u32,
     input_channels: u16,
     /// Leftover samples from the last conversion that didn't fill a full resampler chunk
     remainder: Vec<f32>,
@@ -27,7 +26,6 @@ impl ToWhisper {
         };
         Ok(Self {
             resampler,
-            input_rate,
             input_channels,
             remainder: Vec::new(),
         })
@@ -62,7 +60,4 @@ impl ToWhisper {
         }
     }
 
-    pub fn _input_rate(&self) -> u32 {
-        self.input_rate
-    }
 }

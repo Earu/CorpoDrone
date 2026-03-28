@@ -4,6 +4,8 @@ use tracing::{info, warn};
 
 use super::AudioChunk;
 
+// ── Windows — named pipe ──────────────────────────────────────────────────────
+
 #[cfg(windows)]
 pub fn run(pipe_path: &str, rx: Receiver<AudioChunk>) -> Result<()> {
     use std::ffi::OsStr;
@@ -12,8 +14,8 @@ pub fn run(pipe_path: &str, rx: Receiver<AudioChunk>) -> Result<()> {
     use windows::Win32::Storage::FileSystem::WriteFile;
     use windows::Win32::Storage::FileSystem::PIPE_ACCESS_OUTBOUND;
     use windows::Win32::System::Pipes::{
-        ConnectNamedPipe, CreateNamedPipeW,
-        NAMED_PIPE_MODE, PIPE_READMODE_BYTE, PIPE_TYPE_BYTE, PIPE_WAIT,
+        ConnectNamedPipe, CreateNamedPipeW, NAMED_PIPE_MODE, PIPE_READMODE_BYTE, PIPE_TYPE_BYTE,
+        PIPE_WAIT,
     };
     use windows::core::PCWSTR;
 
@@ -29,11 +31,11 @@ pub fn run(pipe_path: &str, rx: Receiver<AudioChunk>) -> Result<()> {
             PCWSTR(wide.as_ptr()),
             PIPE_ACCESS_OUTBOUND,
             NAMED_PIPE_MODE(PIPE_TYPE_BYTE.0 | PIPE_READMODE_BYTE.0 | PIPE_WAIT.0),
-            1,     // max instances
-            65536, // out buffer size
-            0,     // in buffer size
-            0,     // default timeout
-            None,  // security attributes
+            1,
+            65536,
+            0,
+            0,
+            None,
         )
     };
 
@@ -53,7 +55,6 @@ pub fn run(pipe_path: &str, rx: Receiver<AudioChunk>) -> Result<()> {
         }
     }
 
-    // Send end-of-stream sentinel
     let sentinel = AudioChunk::sentinel();
     let _ = unsafe { WriteFile(pipe, Some(&sentinel), None, None) };
 
@@ -62,7 +63,49 @@ pub fn run(pipe_path: &str, rx: Receiver<AudioChunk>) -> Result<()> {
     Ok(())
 }
 
-#[cfg(not(windows))]
+// ── Unix — POSIX FIFO ─────────────────────────────────────────────────────────
+
+#[cfg(unix)]
+pub fn run(pipe_path: &str, rx: Receiver<AudioChunk>) -> Result<()> {
+    use std::ffi::CString;
+    use std::io::Write;
+
+    // Clean up any stale file from a previous run
+    let _ = std::fs::remove_file(pipe_path);
+
+    // Create the FIFO
+    let c_path = CString::new(pipe_path)?;
+    let ret = unsafe { libc::mkfifo(c_path.as_ptr(), 0o644) };
+    if ret < 0 {
+        anyhow::bail!(
+            "mkfifo({pipe_path}) failed: {}",
+            std::io::Error::last_os_error()
+        );
+    }
+
+    info!("Waiting for Python to connect to audio FIFO: {pipe_path}");
+
+    // Opening a FIFO for writing blocks until the reader (Python) opens its end
+    let mut file = std::fs::OpenOptions::new().write(true).open(pipe_path)?;
+    info!("Python connected to audio pipe");
+
+    for chunk in &rx {
+        let encoded = chunk.encode();
+        if let Err(e) = file.write_all(&encoded) {
+            warn!("Audio pipe write error: {e}");
+            break;
+        }
+    }
+
+    let sentinel = AudioChunk::sentinel();
+    let _ = file.write_all(&sentinel);
+    let _ = std::fs::remove_file(pipe_path);
+
+    info!("Audio pipe closed");
+    Ok(())
+}
+
+#[cfg(not(any(windows, unix)))]
 pub fn run(_pipe_path: &str, _rx: Receiver<AudioChunk>) -> Result<()> {
-    anyhow::bail!("audio-capture only supports Windows");
+    anyhow::bail!("audio-capture: unsupported platform");
 }
