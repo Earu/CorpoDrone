@@ -56,6 +56,9 @@ if ($IsWindows) {
     Write-Host "  Installing PyTorch (CPU/MPS build for macOS)..." -ForegroundColor Gray
     & $pip install torch torchaudio
     if ($LASTEXITCODE -ne 0) { Write-Host "PyTorch install failed" -ForegroundColor Red; exit 1 }
+    Write-Host "  Installing mlx-whisper (Apple Silicon transcription)..." -ForegroundColor Gray
+    & $pip install mlx-whisper
+    if ($LASTEXITCODE -ne 0) { Write-Host "mlx-whisper install failed" -ForegroundColor Red; exit 1 }
 }
 
 Write-Host "  Installing pipeline dependencies..." -ForegroundColor Gray

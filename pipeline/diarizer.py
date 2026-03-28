@@ -30,7 +30,12 @@ class Diarizer:
                 "pyannote/speaker-diarization-3.1",
                 use_auth_token=hf_token or True,
             )
-            device = "cuda" if torch.cuda.is_available() else "cpu"
+            if torch.cuda.is_available():
+                device = "cuda"
+            elif torch.backends.mps.is_available():
+                device = "mps"
+            else:
+                device = "cpu"
             self._pipeline.to(torch.device(device))
             log.info("pyannote_loaded", device=device)
         except Exception as e:
