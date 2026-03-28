@@ -88,6 +88,11 @@ class AudioReceiver(threading.Thread):
                     self.queue.put(None)
                     return
                 time.sleep(1.0)
+            else:
+                if self._connected_once:
+                    # _connect_and_read returned cleanly (sentinel or EOF already handled).
+                    # Don't try to reconnect — the session is over.
+                    return
 
     def _connect_and_read(self):
         log.info("opening_audio_pipe", path=self.pipe_path)
@@ -99,7 +104,8 @@ class AudioReceiver(threading.Thread):
                 raw_len = self._read_exact(pipe, 4)
                 if raw_len is None:
                     log.info("audio_pipe_eof")
-                    break
+                    self.queue.put(None)
+                    return
                 (payload_len,) = struct.unpack("<I", raw_len)
 
                 payload = self._read_exact(pipe, payload_len)
