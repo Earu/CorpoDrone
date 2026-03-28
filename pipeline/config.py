@@ -28,12 +28,18 @@ else:
         import tomli as tomllib
 
 
+def _default_pipe(name: str) -> str:
+    if sys.platform == "win32":
+        return rf"\\.\pipe\corpodrone-{name}"
+    return f"/tmp/corpodrone-{name}"
+
+
 @dataclass
 class Config:
-    # Named pipe paths
-    audio_pipe: str = r"\\.\pipe\corpodrone-audio"
-    transcript_pipe: str = r"\\.\pipe\corpodrone-transcript"
-    control_pipe: str = r"\\.\pipe\corpodrone-control"
+    # Named pipe / FIFO paths (platform-specific defaults)
+    audio_pipe: str = _default_pipe("audio")
+    transcript_pipe: str = _default_pipe("transcript")
+    control_pipe: str = _default_pipe("control")
 
     # Whisper
     whisper_model: str = "small"          # tiny/base/small/medium/large-v3

@@ -22,18 +22,39 @@ struct Config {
 struct PythonStdin(TokioMutex<Option<tokio::process::ChildStdin>>);
 
 fn load_config() -> Config {
+    // Platform-specific binary name and paths
+    #[cfg(windows)]
+    let capture_bin_name = "audio-capture.exe";
+    #[cfg(not(windows))]
+    let capture_bin_name = "audio-capture";
+
     let capture_bin = std::env::current_exe()
         .ok()
-        .and_then(|p| p.parent().map(|d| d.join("audio-capture.exe")))
+        .and_then(|p| p.parent().map(|d| d.join(capture_bin_name)))
         .map(|p| p.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "audio-capture.exe".to_string());
+        .unwrap_or_else(|| capture_bin_name.to_string());
+
+    #[cfg(windows)]
+    let (transcript_pipe, audio_pipe, python_exe, python_script) = (
+        r"\\.\pipe\corpodrone-transcript".to_string(),
+        r"\\.\pipe\corpodrone-audio".to_string(),
+        r".venv\Scripts\python.exe".to_string(),
+        r"pipeline\pipeline.py".to_string(),
+    );
+    #[cfg(not(windows))]
+    let (transcript_pipe, audio_pipe, python_exe, python_script) = (
+        "/tmp/corpodrone-transcript".to_string(),
+        "/tmp/corpodrone-audio".to_string(),
+        ".venv/bin/python".to_string(),
+        "pipeline/pipeline.py".to_string(),
+    );
 
     let mut cfg = Config {
-        transcript_pipe: r"\\.\pipe\corpodrone-transcript".to_string(),
-        audio_pipe: r"\\.\pipe\corpodrone-audio".to_string(),
+        transcript_pipe,
+        audio_pipe,
         capture_bin,
-        python_exe: r".venv\Scripts\python.exe".to_string(),
-        python_script: r"pipeline\pipeline.py".to_string(),
+        python_exe,
+        python_script,
         speakers_file: "speakers.json".to_string(),
     };
 
@@ -75,7 +96,6 @@ fn load_config() -> Config {
 
 // ---- Log helpers ----
 
-/// Emit a line to the in-app debug console under the given process tab.
 fn emit_log(app: &AppHandle, process: &str, line: impl Into<String>) {
     let _ = app.emit("log-line", serde_json::json!({
         "process": process,
@@ -83,7 +103,6 @@ fn emit_log(app: &AppHandle, process: &str, line: impl Into<String>) {
     }));
 }
 
-/// Read lines from a child process stream and forward them to the in-app console.
 async fn stream_output(
     reader: impl tokio::io::AsyncRead + Unpin + Send + 'static,
     process: &'static str,
@@ -150,7 +169,6 @@ async fn start_recording(
     emit_log(&app, "system", format!("audio-capture started (pid={pid})"));
     tracing::info!("audio-capture started (pid={pid})");
 
-    // Stream stdout/stderr to the in-app console
     if let Some(stdout) = child.stdout.take() {
         let app_c = app.clone();
         tokio::spawn(async move { stream_output(stdout, "audio", app_c).await });
@@ -176,8 +194,15 @@ async fn stop_recording() -> Result<serde_json::Value, String> {
         return Err("Not recording".to_string());
     }
 
+    #[cfg(windows)]
     let _ = tokio::process::Command::new("taskkill")
         .args(["/F", "/IM", "audio-capture.exe"])
+        .output()
+        .await;
+
+    #[cfg(not(windows))]
+    let _ = tokio::process::Command::new("pkill")
+        .args(["-f", "audio-capture"])
         .output()
         .await;
 
@@ -348,12 +373,8 @@ async fn run_pipe_reader(pipe_path: String, app: AppHandle) {
                         continue;
                     }
                     match serde_json::from_str::<serde_json::Value>(trimmed) {
-                        Ok(msg) => {
-                            let _ = app.emit("pipeline-event", msg);
-                        }
-                        Err(e) => {
-                            tracing::warn!("Invalid JSON from Python pipeline: {e}");
-                        }
+                        Ok(msg) => { let _ = app.emit("pipeline-event", msg); }
+                        Err(e) => tracing::warn!("Invalid JSON from Python pipeline: {e}"),
                     }
                 }
                 Err(e) => {
@@ -367,9 +388,70 @@ async fn run_pipe_reader(pipe_path: String, app: AppHandle) {
     }
 }
 
-#[cfg(not(windows))]
-async fn run_pipe_reader(pipe_path: String, _app: AppHandle) {
-    tracing::warn!("Transcript pipe reader is Windows-only (path: {pipe_path})");
+// Unix: create a POSIX FIFO and read JSON lines from it.
+// Python opens the write end; we open the read end (blocking until Python connects).
+#[cfg(unix)]
+async fn run_pipe_reader(pipe_path: String, app: AppHandle) {
+    use tokio::io::{AsyncBufReadExt, BufReader};
+
+    loop {
+        // Clean up any stale FIFO from a previous run, then create a fresh one
+        let _ = std::fs::remove_file(&pipe_path);
+        let _ = std::process::Command::new("mkfifo").arg(&pipe_path).status();
+
+        tracing::info!("Waiting for Python to connect to transcript pipe...");
+
+        // Opening a FIFO for reading blocks until the writer (Python) opens its end.
+        // Run this in a blocking thread so we don't stall the async runtime.
+        let path_clone = pipe_path.clone();
+        let file = match tokio::task::spawn_blocking(move || {
+            std::fs::OpenOptions::new().read(true).open(&path_clone)
+        })
+        .await
+        {
+            Ok(Ok(f)) => f,
+            Ok(Err(e)) => {
+                tracing::warn!("Failed to open transcript FIFO: {e}");
+                tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                continue;
+            }
+            Err(e) => {
+                tracing::warn!("spawn_blocking error: {e}");
+                break;
+            }
+        };
+
+        tracing::info!("Python connected to transcript pipe");
+
+        let async_file = tokio::fs::File::from_std(file);
+        let mut reader = BufReader::new(async_file);
+        let mut line = String::new();
+
+        loop {
+            line.clear();
+            match reader.read_line(&mut line).await {
+                Ok(0) => {
+                    tracing::info!("Transcript pipe closed by Python, reconnecting...");
+                    break;
+                }
+                Ok(_) => {
+                    let trimmed = line.trim();
+                    if !trimmed.is_empty() {
+                        match serde_json::from_str::<serde_json::Value>(trimmed) {
+                            Ok(msg) => { let _ = app.emit("pipeline-event", msg); }
+                            Err(e) => tracing::warn!("Invalid JSON from Python pipeline: {e}"),
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("Transcript pipe read error: {e}");
+                    break;
+                }
+            }
+        }
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+    }
 }
 
 // ---- Python process ----
@@ -399,13 +481,11 @@ async fn spawn_python(cfg: &Config, stdin_state: Arc<PythonStdin>, app: AppHandl
 
         match cmd.spawn() {
             Ok(mut child) => {
-                // Store stdin for command sending
                 {
                     let mut guard = stdin_state.0.lock().await;
                     *guard = child.stdin.take();
                 }
 
-                // Stream stdout/stderr to the in-app console
                 if let Some(stdout) = child.stdout.take() {
                     let app_c = app.clone();
                     tokio::spawn(async move { stream_output(stdout, "pipeline", app_c).await });
@@ -423,7 +503,6 @@ async fn spawn_python(cfg: &Config, stdin_state: Arc<PythonStdin>, app: AppHandl
 
                 let _ = child.wait().await;
 
-                // Clear stale stdin handle
                 {
                     let mut guard = stdin_state.0.lock().await;
                     *guard = None;
@@ -454,6 +533,7 @@ async fn spawn_python(cfg: &Config, stdin_state: Arc<PythonStdin>, app: AppHandl
     Ok(())
 }
 
+#[cfg(windows)]
 fn kill_subprocesses() {
     SHUTTING_DOWN.store(true, Ordering::Relaxed);
     let pid = PYTHON_PID.load(Ordering::Relaxed);
@@ -465,6 +545,21 @@ fn kill_subprocesses() {
     }
     let _ = std::process::Command::new("taskkill")
         .args(["/F", "/IM", "audio-capture.exe"])
+        .output();
+}
+
+#[cfg(not(windows))]
+fn kill_subprocesses() {
+    SHUTTING_DOWN.store(true, Ordering::Relaxed);
+    let pid = PYTHON_PID.load(Ordering::Relaxed);
+    if pid != 0 {
+        let _ = std::process::Command::new("kill")
+            .args(["-9", &pid.to_string()])
+            .output();
+        tracing::info!("Killed Python pipeline (pid={pid})");
+    }
+    let _ = std::process::Command::new("pkill")
+        .args(["-f", "audio-capture"])
         .output();
 }
 
@@ -514,12 +609,10 @@ pub fn run() {
             let app_handle = app.handle().clone();
             let pipe_path = cfg.transcript_pipe.clone();
 
-            // Start transcript pipe reader
             tauri::async_runtime::spawn(async move {
                 run_pipe_reader(pipe_path, app_handle).await;
             });
 
-            // Spawn Python pipeline (stays alive for the entire app session)
             let cfg_py = Arc::clone(&cfg);
             let stdin_py = Arc::clone(&python_stdin);
             let app_py = app.handle().clone();
