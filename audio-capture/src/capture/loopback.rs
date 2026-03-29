@@ -35,7 +35,7 @@ mod macos_sck {
         atomic::{AtomicBool, Ordering},
         Arc, Mutex,
     };
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
     use anyhow::Result;
     use crossbeam_channel::Sender;
     use screencapturekit::prelude::*;
@@ -44,17 +44,6 @@ mod macos_sck {
     use crate::ipc::{AudioChunk, AudioSource};
     use super::{CHUNK_FRAMES, current_time_us};
 
-    /// Bundle IDs of apps that are known to bypass the system audio mix.
-    const COMM_APP_BUNDLE_IDS: &[&str] = &[
-        "com.hnc.Discord",
-        "com.tinyspeck.slackmacgap",
-        "com.microsoft.teams2",  // Teams (new)
-        "com.microsoft.teams",   // Teams Classic
-        "us.zoom.xos",
-    ];
-
-    /// How often to look for communication apps that started after capture began.
-    const POLL_COMM_APPS: Duration = Duration::from_secs(2);
 
     struct CaptureState {
         resampler: ToWhisper,
@@ -153,17 +142,6 @@ mod macos_sck {
         })))
     }
 
-    /// Display stream config: mono so SCKit downmixes the system mix cleanly.
-    fn display_audio_config() -> SCStreamConfiguration {
-        SCStreamConfiguration::new()
-            .with_captures_audio(true)
-            .with_excludes_current_process_audio(false)
-            .with_sample_rate(48_000)
-            .with_channel_count(1)
-            .with_width(2)
-            .with_height(2)
-    }
-
     /// Per-app stream config: stereo, because some apps (e.g. Discord) return
     /// empty audio callbacks when channel_count=1 is requested.
     /// The callback handles CoreAudio's non-interleaved layout explicitly.
@@ -177,15 +155,8 @@ mod macos_sck {
             .with_height(2)
     }
 
-    fn is_comm_bundle(app: &SCRunningApplication) -> bool {
-        COMM_APP_BUNDLE_IDS
-            .iter()
-            .any(|&id| app.bundle_identifier() == id)
-    }
-
-    /// Start a per-app stream if `app` is a listed comm app and we do not already
-    /// have a stream for this process (PID).
-    fn try_start_comm_stream(
+    /// Start a per-app SCKit stream for `app` if not already tracked by PID.
+    fn try_start_app_stream(
         app: &SCRunningApplication,
         display: &SCDisplay,
         tx: &Sender<AudioChunk>,
@@ -193,9 +164,6 @@ mod macos_sck {
         tracked_pids: &mut HashSet<i32>,
         app_streams: &mut Vec<SCStream>,
     ) {
-        if !is_comm_bundle(app) {
-            return;
-        }
         let pid = app.process_id();
         if tracked_pids.contains(&pid) {
             return;
@@ -239,7 +207,15 @@ mod macos_sck {
         }
     }
 
-    pub fn run(tx: Sender<AudioChunk>, _chunk_ms: u32) -> Result<()> {
+    pub fn run(tx: Sender<AudioChunk>, _chunk_ms: u32, target_bundles: Option<Vec<String>>) -> Result<()> {
+        let ids = match target_bundles {
+            Some(v) if !v.is_empty() => v,
+            _ => {
+                tracing::warn!("No loopback apps specified — loopback capture disabled");
+                return Ok(());
+            }
+        };
+
         let stopped = Arc::new(AtomicBool::new(false));
 
         let content = SCShareableContent::get()
@@ -253,79 +229,45 @@ mod macos_sck {
                 "No display found — ensure Screen Recording permission is granted"
             ))?;
 
-        // ── 1. Display stream (system audio mix) ──────────────────────────────
-        let display_filter = SCContentFilter::create()
-            .with_display(&display)
-            .with_excluding_windows(&[])
-            .build();
-
-        let display_state = make_state(tx.clone(), stopped.clone(), 1)?;
-        let mut display_stream = SCStream::new(&display_filter, &display_audio_config());
-        display_stream.add_output_handler(
-            AudioHandler { state: display_state },
-            SCStreamOutputType::Audio,
-        );
-        display_stream
-            .start_capture()
-            .map_err(|e| anyhow::anyhow!("display stream start_capture: {e:?}"))?;
-        tracing::info!("Loopback capture started (display stream)");
-
-        // ── 2. Per-app streams for communication apps (initial + later launches) ─
+        // Start one per-app stream for each selected bundle ID that is currently running.
+        // Apps must be running at the time recording starts (no polling for late launches).
         let mut app_streams: Vec<SCStream> = Vec::new();
         let mut tracked_pids: HashSet<i32> = HashSet::new();
         for app in content.applications() {
-            try_start_comm_stream(
-                &app,
-                &display,
-                &tx,
-                &stopped,
-                &mut tracked_pids,
-                &mut app_streams,
-            );
-        }
-
-        let mut next_comm_poll = Instant::now() + POLL_COMM_APPS;
-        while !stopped.load(Ordering::Relaxed) {
-            std::thread::sleep(Duration::from_millis(50));
-            if Instant::now() >= next_comm_poll {
-                next_comm_poll = Instant::now() + POLL_COMM_APPS;
-                match SCShareableContent::get() {
-                    Ok(fresh) => {
-                        if let Some(d) = fresh.displays().into_iter().next() {
-                            for app in fresh.applications() {
-                                try_start_comm_stream(
-                                    &app,
-                                    &d,
-                                    &tx,
-                                    &stopped,
-                                    &mut tracked_pids,
-                                    &mut app_streams,
-                                );
-                            }
-                        }
-                    }
-                    Err(e) => tracing::debug!(error=?e, "Loopback: SCShareableContent::get failed while polling"),
-                }
+            if ids.iter().any(|id| id == &app.bundle_identifier()) {
+                try_start_app_stream(
+                    &app,
+                    &display,
+                    &tx,
+                    &stopped,
+                    &mut tracked_pids,
+                    &mut app_streams,
+                );
             }
         }
 
-        display_stream.stop_capture().ok();
-        for s in app_streams {
-            s.stop_capture().ok();
+        if app_streams.is_empty() {
+            tracing::warn!("None of the requested apps were found running; loopback capture will produce no audio");
         }
+
+        while !stopped.load(Ordering::Relaxed) {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+
+        for s in app_streams { s.stop_capture().ok(); }
         Ok(())
     }
 }
 
 #[cfg(target_os = "macos")]
-pub fn run(tx: Sender<AudioChunk>, chunk_ms: u32) -> Result<()> {
-    macos_sck::run(tx, chunk_ms)
+pub fn run(tx: Sender<AudioChunk>, chunk_ms: u32, target_bundles: Option<Vec<String>>) -> Result<()> {
+    macos_sck::run(tx, chunk_ms, target_bundles)
 }
 
 // ── Windows — WASAPI loopback ─────────────────────────────────────────────────
 
 #[cfg(windows)]
-pub fn run(tx: Sender<AudioChunk>, _chunk_ms: u32) -> Result<()> {
+pub fn run(tx: Sender<AudioChunk>, _chunk_ms: u32, _target_bundles: Option<Vec<String>>) -> Result<()> {
     use std::collections::VecDeque;
     use tracing::{info, warn};
     use wasapi::*;

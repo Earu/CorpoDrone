@@ -868,6 +868,31 @@ button.btn-ghost:hover { color: var(--text); border-color: var(--text-muted); }
   margin: 0;
 }
 
+/* App picker modal */
+#app-picker-modal .modal-body  { padding: 20px 32px 8px; display: flex; flex-direction: column; gap: 4px; }
+#app-picker-modal .modal-footer { padding: 16px 32px 24px; }
+
+.app-picker-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 240px;
+  overflow-y: auto;
+  margin: 6px 0 12px 22px;
+  padding-right: 4px;
+}
+.app-picker-app-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text);
+  cursor: pointer;
+  padding: 3px 0;
+}
+.app-picker-app-row:hover { color: var(--accent); }
+
 /* Ollama modal */
 #ollama-modal .modal-title { color: var(--warning); }
 #ollama-modal .modal-body  { padding: 24px 32px 16px; }

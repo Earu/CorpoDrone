@@ -169,10 +169,57 @@ fn set_mute(muted: bool) -> serde_json::Value {
     serde_json::json!({ "ok": true, "muted": muted })
 }
 
+/// macOS only: return a list of running GUI apps as [{name, bundle_id}].
+/// Uses osascript to query System Events — no extra dependencies needed.
+#[tauri::command]
+async fn list_loopback_apps() -> Result<serde_json::Value, String> {
+    #[cfg(not(target_os = "macos"))]
+    return Ok(serde_json::json!([]));
+
+    #[cfg(target_os = "macos")]
+    {
+        let script = r#"set out to {}
+tell application "System Events"
+    repeat with proc in (every process where background only is false)
+        try
+            set bid to bundle identifier of proc
+            set nm to displayed name of proc
+            if bid is not missing value and nm is not missing value then
+                set end of out to (nm & "|" & bid)
+            end if
+        end try
+    end repeat
+end tell
+set AppleScript's text item delimiters to "\n"
+return out as text"#;
+
+        let output = tokio::process::Command::new("osascript")
+            .arg("-e").arg(script)
+            .output()
+            .await
+            .map_err(|e| e.to_string())?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let apps: Vec<serde_json::Value> = stdout
+            .lines()
+            .filter_map(|line| {
+                let mut parts = line.splitn(2, '|');
+                let name = parts.next()?.trim().to_string();
+                let bundle_id = parts.next()?.trim().to_string();
+                if name.is_empty() || bundle_id.is_empty() { return None; }
+                Some(serde_json::json!({ "name": name, "bundle_id": bundle_id }))
+            })
+            .collect();
+
+        Ok(serde_json::json!(apps))
+    }
+}
+
 #[tauri::command]
 async fn start_recording(
     state: State<'_, Arc<Config>>,
     app: AppHandle,
+    loopback_apps: Option<Vec<String>>,
 ) -> Result<serde_json::Value, String> {
     if RECORDING.load(Ordering::Relaxed) {
         return Err("Already recording".to_string());
@@ -183,6 +230,11 @@ async fn start_recording(
 
     let mut cmd = tokio::process::Command::new(&bin);
     cmd.arg("--pipe").arg(&pipe);
+    if let Some(ref ids) = loopback_apps {
+        if !ids.is_empty() {
+            cmd.arg("--loopback-apps").arg(ids.join(","));
+        }
+    }
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
 
@@ -710,6 +762,7 @@ pub fn run() {
         .manage(Arc::clone(&python_stdin))
         .invoke_handler(tauri::generate_handler![
             get_status,
+            list_loopback_apps,
             start_recording,
             stop_recording,
             kill_pipeline,
