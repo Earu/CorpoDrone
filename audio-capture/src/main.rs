@@ -2,7 +2,7 @@ mod capture;
 mod ipc;
 
 use anyhow::Result;
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use tracing::info;
 
 fn default_pipe() -> String {
@@ -16,6 +16,9 @@ fn default_pipe() -> String {
 #[derive(Parser, Debug)]
 #[command(name = "audio-capture", about = "Captures mic + loopback audio and streams to Python pipeline")]
 struct Args {
+    #[command(subcommand)]
+    command: Option<Command>,
+
     /// Named pipe or FIFO path for audio output
     #[arg(long, default_value_t = default_pipe())]
     pipe: String,
@@ -30,6 +33,13 @@ struct Args {
     loopback_apps: Option<String>,
 }
 
+#[derive(Subcommand, Debug)]
+enum Command {
+    /// List running GUI applications available for loopback capture (macOS only).
+    /// Prints a JSON array of {name, bundle_id} objects to stdout, then exits.
+    ListApps,
+}
+
 fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .json()
@@ -38,6 +48,18 @@ fn main() -> Result<()> {
         .init();
 
     let args = Args::parse();
+
+    if let Some(Command::ListApps) = args.command {
+        let apps = capture::loopback::list_apps();
+        // Print compact JSON to stdout for the caller to parse.
+        let json = apps.iter()
+            .map(|(name, bid)| format!(r#"{{"name":"{}","bundle_id":"{}"}}"#,
+                name.replace('"', "\\\""), bid.replace('"', "\\\"")))
+            .collect::<Vec<_>>()
+            .join(",");
+        println!("[{}]", json);
+        return Ok(());
+    }
 
     let loopback_apps: Option<Vec<String>> = args.loopback_apps.map(|s| {
         s.split(',').map(|id| id.trim().to_string()).filter(|id| !id.is_empty()).collect()
