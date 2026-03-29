@@ -412,6 +412,39 @@ button.btn-ghost:hover { color: var(--text); border-color: var(--text-muted); }
 }
 
 /* ── Transcript segments ─────────────────────────────────────────── */
+.transcript-pending {
+  margin-bottom: 10px;
+  padding: 8px 12px;
+  border-left: 2px solid var(--border-hi);
+  background: var(--surface);
+}
+
+.transcript-pending-track {
+  height: 2px;
+  background: rgba(200, 255, 0, 0.15);
+  border-radius: 1px;
+  overflow: hidden;
+}
+
+.transcript-pending-bar {
+  height: 100%;
+  width: 0;
+  background: var(--accent);
+  border-radius: 1px;
+  animation: pending-fill 30s linear forwards;
+}
+
+@keyframes pending-fill {
+  0%   { width: 0%;  }
+  7%   { width: 50%; }
+  17%  { width: 70%; }
+  33%  { width: 82%; }
+  55%  { width: 88%; }
+  100% { width: 92%; }
+}
+
+.transcript-spinner.hidden { display: none; }
+
 .segment {
   margin-bottom: 10px;
   padding: 8px 12px;

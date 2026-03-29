@@ -100,7 +100,15 @@ function addSegment(msg) {
     return;
   }
 
-  state.segments.push(msg);
+  _resetPendingBar();
+
+  // Insert into state in chronological order
+  let insertIdx = state.segments.length;
+  for (let i = state.segments.length - 1; i >= 0; i--) {
+    if (state.segments[i].start_us <= msg.start_us) break;
+    insertIdx = i;
+  }
+  state.segments.splice(insertIdx, 0, msg);
   ensureSpeaker(msg.speaker_id);
 
   const container = document.getElementById('transcript');
@@ -121,7 +129,14 @@ function addSegment(msg) {
     </div>
     <div class="segment-text">${escHtml(msg.text)}</div>
   `;
-  container.appendChild(el);
+
+  // Insert DOM element in chronological order, keeping pending box last
+  const pendingBox = document.getElementById('transcript-pending');
+  const nextSeg = insertIdx < state.segments.length - 1
+    ? document.getElementById(`seg-${state.segments[insertIdx + 1].id}`)
+    : null;
+  container.insertBefore(el, nextSeg || pendingBox || null);
+  if (pendingBox) container.appendChild(pendingBox);
 
   setTimeout(() => el.classList.remove('new'), 500);
 
@@ -131,15 +146,18 @@ function addSegment(msg) {
 }
 
 function clearTranscript() {
+  const pendingBox = document.getElementById('transcript-pending');
   state.segments = [];
   document.getElementById('transcript').innerHTML = '';
+  if (pendingBox) document.getElementById('transcript').appendChild(pendingBox);
 }
 
 // ---- Debrief page ----
 let _summaryText = '';
 let _transcriptSegs = [];
-let _pipelineActive = false;   // true while audio-capture is running
-let _ignoredProcessing = false; // true after user clicked "Ignore and continue"
+let _pipelineActive = false;      // true while audio-capture is running
+let _ignoredProcessing = false;   // true after user clicked "Ignore and continue"
+let _debriefModeChosen = false;   // true once user has picked a debrief mode
 
 function showChoiceUI() {
   document.getElementById('debrief-choice').classList.remove('hidden');
@@ -181,6 +199,7 @@ async function choosePipelineMode(mode) {
 }
 
 async function _proceedWithMode(mode) {
+  _debriefModeChosen = true;
   document.getElementById('debrief-choice').classList.add('hidden');
   document.getElementById('debrief-progress').classList.remove('hidden');
   setOverallProgress(0, mode === 'retranscribe' ? 'Starting re-transcription…' : 'Building summary…');
@@ -393,6 +412,12 @@ function showDebrief(msg) {
   }
 
   switchTab('debrief-tab');
+
+  // If enrollment was deferred while debrief was processing, open it now
+  if (_deferEnrollment && _enrollmentData && _enrollmentData.length) {
+    _deferEnrollment = false;
+    openEnrollmentModal();
+  }
 }
 
 async function confirmEndSession() {
@@ -444,6 +469,8 @@ function newSession() {
   _enrollmentResult = {};
   _enrollmentReady = false;
   _sessionEnded = false;
+  _deferEnrollment = false;
+  _debriefModeChosen = false;
   _clearOllamaTimers();
   setMuteState(false);
   document.getElementById('transcript').innerHTML = '';
@@ -545,6 +572,7 @@ async function saveSettings() {
 
   try {
     await invoke('save_settings', { settings });
+    try { await invoke('kill_pipeline'); } catch (_) {}
     showPage('landing');
   } catch (e) {
     alert('Failed to save settings: ' + e);
@@ -654,8 +682,9 @@ let _enrollmentData = null;   // speakers array from enrollment_data event
 let _enrollmentIdx = 0;       // current carousel page
 let _enrollmentResult = {};   // session_id → { person_id, name, embedding }
 let _knownPersons = [];       // fetched from get_speaker_database
-let _enrollmentReady = false; // DB fetch completed and data is ready
-let _sessionEnded = false;    // session_ended status received
+let _enrollmentReady = false;   // DB fetch completed and data is ready
+let _sessionEnded = false;      // session_ended status received
+let _deferEnrollment = false;   // enrollment arrived during active debrief processing — open after
 
 async function handleEnrollmentData(msg) {
   if (!msg.speakers || !msg.speakers.length) return;
@@ -670,6 +699,12 @@ async function handleEnrollmentData(msg) {
     _knownPersons = [];
   }
   _enrollmentReady = true;
+  // If debrief is actively processing, defer until showDebrief() fires
+  const debriefProgress = document.getElementById('debrief-progress');
+  if (debriefProgress && !debriefProgress.classList.contains('hidden')) {
+    _deferEnrollment = true;
+    return;
+  }
   // If session_ended already arrived while we were fetching the DB, open now
   if (_sessionEnded && currentPage() === 'debrief') {
     openEnrollmentModal();
@@ -809,7 +844,10 @@ function skipEnrollment() {
 function closeEnrollmentModal() {
   document.getElementById('enrollment-modal').classList.add('hidden');
   _enrollmentData = null;
-  showChoiceUI();
+  // Only reset to choice UI if the user hasn't already picked a debrief mode
+  if (!_debriefModeChosen) {
+    showChoiceUI();
+  }
 }
 
 // ---- Voice database management ----
@@ -952,8 +990,21 @@ function setPipelineReady(ready) {
   btn.textContent = ready ? 'START SESSION' : 'LOADING...';
 }
 
+function _resetPendingBar() {
+  const bar = document.querySelector('#transcript-pending .transcript-pending-bar');
+  if (!bar) return;
+  bar.style.animation = 'none';
+  void bar.offsetWidth;
+  bar.style.animation = '';
+}
+
 function setRecordingState(recording) {
   state.recording = recording;
+  const pending = document.getElementById('transcript-pending');
+  if (pending) {
+    pending.classList.toggle('hidden', !recording);
+    if (recording) _resetPendingBar();
+  }
   if (recording) {
     showPage('workspace');
   } else if (currentPage() === 'workspace') {
