@@ -57,6 +57,7 @@ class Config:
     step_seconds: float = 1.0            # how often to process a new window
 
     # Summarization (generated once at end of session)
+    summarize: bool = True
     ollama_model: str = "mistral"
     ollama_host: str = "http://localhost:11434"
 
