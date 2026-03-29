@@ -503,10 +503,14 @@ class Pipeline:
             except queue.Empty:
                 continue
 
-    def _identify_loopback_speakers(self, audio: np.ndarray, segments: list) -> dict:
+    def _identify_loopback_speakers(self, audio: np.ndarray, segments: list) -> tuple:
         """
         Given (optionally diarized) loopback segments, extract per-speaker embeddings
-        and identify against the DB.  Returns {pyannote_label -> display_name}.
+        and identify against the DB.
+
+        Returns (spk_map, unknown_audio) where:
+          - spk_map: {pyannote_label -> display_name}
+          - unknown_audio: {pyannote_label -> concatenated_audio} for unidentified speakers
 
         Slices each speaker's audio into 5-second chunks, extracts one embedding per
         chunk, then averages them into a centroid.  Feeding the full concatenated audio
@@ -527,6 +531,7 @@ class Pipeline:
                 spk_audio[label].append(audio[s:e])
 
         spk_map = {}
+        unknown_audio = {}
         remote_counter = 0
         for label, chunks in spk_audio.items():
             if not chunks:
@@ -559,7 +564,56 @@ class Pipeline:
 
             remote_counter += 1
             spk_map[label] = "Remote" if remote_counter == 1 else f"Remote {remote_counter}"
-        return spk_map
+            unknown_audio[label] = np.concatenate(chunks)
+        return spk_map, unknown_audio
+
+    def _send_retranscript_enrollment(self, spk_map: dict, unknown_audio: dict):
+        """
+        Build and send an enrollment_data event for speakers that were not identified
+        during re-transcription.  Called after _identify_loopback_speakers returns unknowns.
+        Clips are sliced from the concatenated per-speaker audio (same 5 s target as live).
+        """
+        import io, wave, base64
+
+        def to_base64_wav(samples: np.ndarray) -> str:
+            buf = io.BytesIO()
+            with wave.open(buf, "wb") as w:
+                w.setnchannels(1)
+                w.setsampwidth(2)
+                w.setframerate(SAMPLE_RATE)
+                w.writeframes((np.clip(samples, -1, 1) * 32767).astype(np.int16).tobytes())
+            return base64.b64encode(buf.getvalue()).decode()
+
+        clip_size = int(self._CLIP_TARGET_S * SAMPLE_RATE)
+        min_clip = SAMPLE_RATE  # at least 1 s
+
+        unknowns = []
+        for label, combined in unknown_audio.items():
+            if len(combined) < min_clip:
+                continue
+            clips = [combined[i:i + clip_size]
+                     for i in range(0, len(combined), clip_size)
+                     if len(combined[i:i + clip_size]) >= min_clip]
+            clips = clips[:self._MAX_CLIPS] or [combined]
+
+            clip_payloads = []
+            for clip in clips:
+                clip_emb = (self._embedder.extract(clip)
+                            if self._embedder and self._embedder.available else None)
+                clip_payloads.append({
+                    "audio": to_base64_wav(clip),
+                    "embedding": clip_emb.tolist() if clip_emb is not None else [],
+                })
+
+            unknowns.append({
+                "session_id": f"retranscript_{label}",
+                "name": spk_map.get(label, "Remote"),
+                "clips": clip_payloads,
+            })
+
+        if unknowns:
+            log.info("retranscript_enrollment_ready", n_speakers=len(unknowns))
+            self.writer.send({"type": "enrollment_data", "speakers": unknowns})
 
     def _transcribe_chunked(self, audio: np.ndarray, progress_cb=None) -> List[Dict[str, Any]]:
         """Transcribe audio in RETRANSCRIBE_CHUNK_S-second chunks.
@@ -665,7 +719,9 @@ class Pipeline:
                     if self.diarizer and self.diarizer.available:
                         turns = self.diarizer.diarize(audio)
                         segs = self.diarizer.assign_speakers(segs, turns)
-                    spk_map = self._identify_loopback_speakers(audio, segs)
+                    spk_map, unknown_audio = self._identify_loopback_speakers(audio, segs)
+                    if self.cfg.speaker_enroll and unknown_audio:
+                        self._send_retranscript_enrollment(spk_map, unknown_audio)
 
                 for seg in segs:
                     text = seg.get("text", "").strip()

@@ -60,12 +60,15 @@ function handleMessage(msg) {
           modal.classList.add('hidden');
           _enterDebrief();
         }
+        _sessionEnded = true;
         if (currentPage() === 'debrief') {
-          if (_enrollmentData && _enrollmentData.length) {
+          if (_enrollmentReady && _enrollmentData && _enrollmentData.length) {
             openEnrollmentModal();
-          } else {
+          } else if (!_enrollmentData) {
+            // No enrollment data coming — go straight to choice UI
             showChoiceUI();
           }
+          // else: enrollment data is still being fetched — handleEnrollmentData will open modal
         }
       } else if (msg.state === 'pipeline_crashed') {
         setPipelineReady(false);
@@ -421,8 +424,9 @@ function _enterDebrief() {
   state.recording = false;
   const recDot = document.getElementById('rec-dot');
   if (recDot) recDot.className = 'dot';
-  _enrollmentData = null;
-  _enrollmentResult = {};
+  // Don't clear _enrollmentData here — handleEnrollmentData may have already set it
+  // and its async DB fetch is still in progress. It gets cleared by closeEnrollmentModal()
+  // or newSession().
   showPage('debrief');
   switchTab('debrief-tab');
   document.getElementById('debrief-body').innerHTML =
@@ -438,6 +442,8 @@ function newSession() {
   _ignoredProcessing = false;
   _enrollmentData = null;
   _enrollmentResult = {};
+  _enrollmentReady = false;
+  _sessionEnded = false;
   _clearOllamaTimers();
   setMuteState(false);
   document.getElementById('transcript').innerHTML = '';
@@ -648,17 +654,25 @@ let _enrollmentData = null;   // speakers array from enrollment_data event
 let _enrollmentIdx = 0;       // current carousel page
 let _enrollmentResult = {};   // session_id → { person_id, name, embedding }
 let _knownPersons = [];       // fetched from get_speaker_database
+let _enrollmentReady = false; // DB fetch completed and data is ready
+let _sessionEnded = false;    // session_ended status received
 
 async function handleEnrollmentData(msg) {
   if (!msg.speakers || !msg.speakers.length) return;
   _enrollmentData = msg.speakers;
   _enrollmentIdx = 0;
   _enrollmentResult = {};
+  _enrollmentReady = false;
   try {
     const db = await invoke('get_speaker_database');
     _knownPersons = Object.entries(db.persons || {}).map(([id, p]) => ({ id, name: p.name }));
   } catch (e) {
     _knownPersons = [];
+  }
+  _enrollmentReady = true;
+  // If session_ended already arrived while we were fetching the DB, open now
+  if (_sessionEnded && currentPage() === 'debrief') {
+    openEnrollmentModal();
   }
 }
 
