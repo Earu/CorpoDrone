@@ -329,6 +329,8 @@ pub fn run(tx: Sender<AudioChunk>, _chunk_ms: u32) -> Result<()> {
     use std::collections::VecDeque;
     use tracing::{info, warn};
     use wasapi::*;
+    use crate::capture::resampler::ToWhisper;
+    use crate::ipc::AudioSource;
 
     initialize_mta().ok()?;
 

@@ -52,6 +52,10 @@ from speaker_database import SpeakerDatabase
 log = structlog.get_logger(__name__)
 
 SAMPLE_RATE = 16_000
+# Maximum audio length fed to Whisper in a single call during re-transcription.
+# Whisper can produce timestamp regressions (looping back to t≈0) on very long
+# audio; chunking avoids this. 10 minutes is well within Whisper's reliable range.
+RETRANSCRIBE_CHUNK_S = 600
 
 
 class AudioStream:
@@ -75,7 +79,7 @@ class AudioStream:
         self._next_process_at = 0  # total at which we should next process
 
     def add(self, chunk: AudioChunk):
-        if not self._start_us:
+        if self._start_us == 0:
             self._start_us = chunk.timestamp_us
         self._buf = np.concatenate([self._buf, chunk.samples])
         self._total += len(chunk.samples)
@@ -149,12 +153,29 @@ class SessionRecorder:
             self._chunks.append(chunk)
 
     def get_audio(self, source_tag: int):
-        """Returns (audio_array, base_timestamp_us) for the given source, or (None, 0)."""
+        """Returns (audio_array, base_timestamp_us) for the given source, or (None, 0).
+
+        Gaps between consecutive chunks (e.g. from a pipe reconnect or mic muting)
+        are filled with silence so that Whisper segment timestamps remain correct
+        relative to wall-clock time.
+        """
         with self._lock:
             chunks = [c for c in self._chunks if c.source == source_tag]
         if not chunks:
             return None, 0
-        return np.concatenate([c.samples for c in chunks]), chunks[0].timestamp_us
+
+        pieces = [chunks[0].samples]
+        for prev, cur in zip(chunks, chunks[1:]):
+            expected_us = len(prev.samples) * 1_000_000 // SAMPLE_RATE
+            actual_us = cur.timestamp_us - prev.timestamp_us
+            gap_us = actual_us - expected_us
+            # Insert silence for any gap larger than 2× the expected chunk duration
+            if gap_us > expected_us * 2:
+                silence_n = int(gap_us * SAMPLE_RATE // 1_000_000)
+                pieces.append(np.zeros(silence_n, dtype=np.float32))
+            pieces.append(cur.samples)
+
+        return np.concatenate(pieces), chunks[0].timestamp_us
 
 
 class CommandReader(threading.Thread):
@@ -240,18 +261,24 @@ class Pipeline:
     # Stream processing (called every step during recording)
     # ------------------------------------------------------------------
 
-    def _process_stream(self, stream: AudioStream, source_tag: int):
+    def _process_stream(self, stream: AudioStream, source_tag: int) -> List[Dict[str, Any]]:
+        """Transcribe the current window and return confirmed segment messages.
+
+        Clip accumulation / speaker identification side-effects still happen here,
+        but messages are returned rather than sent so the caller can sort across
+        sources before emitting.
+        """
         if not stream.has_audio or not stream.ready():
-            return
+            return []
 
         audio, win_start_abs = stream.get_window()
         if len(audio) < SAMPLE_RATE // 2:
-            return
+            return []
 
         segments = self.transcriber.transcribe(audio)
         if not segments:
             stream.emit([], win_start_abs)  # still advance committed position
-            return
+            return []
 
         # Diarization
         if self.diarizer and self.diarizer.available:
@@ -261,6 +288,7 @@ class Pipeline:
         confirmed = stream.emit(segments, win_start_abs)
         source_name = "mic" if source_tag == SOURCE_MIC else "loopback"
 
+        messages = []
         for seg in confirmed:
             text = seg.get("text", "").strip()
             if not text:
@@ -289,7 +317,7 @@ class Pipeline:
 
             speaker_name = self.tracker.get_name(stable_id)
 
-            msg = {
+            messages.append({
                 "type": "segment",
                 "id": str(uuid.uuid4()),
                 "speaker_id": stable_id,
@@ -298,11 +326,9 @@ class Pipeline:
                 "start_us": seg["start_us"],
                 "end_us": seg["end_us"],
                 "text": text,
-            }
+            })
 
-            self.writer.send(msg)
-            with self._segments_lock:
-                self._segments.append(msg)
+        return messages
 
     def _accumulate_clip(self, stable_id: str, audio: np.ndarray):
         """Append audio to the per-speaker accumulator; finalize into a clip when ≥3s."""
@@ -504,6 +530,53 @@ class Pipeline:
             spk_map[label] = "Remote" if remote_counter == 1 else f"Remote {remote_counter}"
         return spk_map
 
+    def _transcribe_chunked(self, audio: np.ndarray, progress_cb=None) -> List[Dict[str, Any]]:
+        """Transcribe audio in RETRANSCRIBE_CHUNK_S-second chunks.
+
+        Feeding the entire session to Whisper at once causes timestamp regressions
+        on long recordings — Whisper's internal counter resets and assigns t≈0 to
+        segments that appear late in the audio.  Processing in chunks and manually
+        offsetting each chunk's timestamps avoids this entirely.
+
+        Monotone enforcement: any segment whose start time regresses more than 1 s
+        behind the previous segment's end is discarded (pure Whisper artefact).
+        """
+        chunk_samples = int(RETRANSCRIBE_CHUNK_S * SAMPLE_RATE)
+        total_samples = len(audio)
+        all_segs: List[Dict[str, Any]] = []
+        prev_end_s = 0.0
+
+        chunk_start = 0
+        while chunk_start < total_samples:
+            chunk_end = min(chunk_start + chunk_samples, total_samples)
+            chunk = audio[chunk_start:chunk_end]
+            offset_s = chunk_start / SAMPLE_RATE
+
+            # Scale the progress callback so it covers only this chunk's slice of
+            # the 0-100 range the caller gave us.
+            if progress_cb:
+                lo = chunk_start / total_samples
+                hi = chunk_end   / total_samples
+                def _chunk_cb(pct, _lo=lo, _hi=hi):
+                    progress_cb(int((_lo + (_hi - _lo) * pct / 100) * 100))
+            else:
+                _chunk_cb = None
+
+            segs = self.transcriber.transcribe_with_progress(chunk, _chunk_cb)
+            for seg in segs:
+                abs_start = offset_s + seg["start"]
+                abs_end   = offset_s + seg["end"]
+                # Drop regressions: Whisper artefact where a segment's start
+                # jumps back before the previous one ended.
+                if abs_start < prev_end_s - 1.0:
+                    continue
+                all_segs.append({**seg, "start": abs_start, "end": abs_end})
+                prev_end_s = abs_end
+
+            chunk_start = chunk_end
+
+        return all_segs
+
     def _build_final_transcript_with_progress(self):
         """
         Re-transcribes the full session audio (mic + loopback separately) using the
@@ -545,7 +618,7 @@ class Pipeline:
                 return cb
 
             try:
-                segs = self.transcriber.transcribe_with_progress(audio, make_cb(range_start, range_end, speaker_label))
+                segs = self._transcribe_chunked(audio, make_cb(range_start, range_end, speaker_label))
 
                 if source_tag == SOURCE_LOOPBACK:
                     if self.diarizer and self.diarizer.available:
@@ -610,8 +683,14 @@ class Pipeline:
                     chunk = self.receiver.queue.get(timeout=0.1)
                 except queue.Empty:
                     # No data yet — still process buffered audio
-                    self._process_stream(self.mic_stream, SOURCE_MIC)
-                    self._process_stream(self.loop_stream, SOURCE_LOOPBACK)
+                    pending = (
+                        self._process_stream(self.mic_stream, SOURCE_MIC) +
+                        self._process_stream(self.loop_stream, SOURCE_LOOPBACK)
+                    )
+                    for msg in sorted(pending, key=lambda m: m["start_us"]):
+                        self.writer.send(msg)
+                        with self._segments_lock:
+                            self._segments.append(msg)
                     continue
 
                 if chunk is None:
@@ -624,12 +703,29 @@ class Pipeline:
                     if not os.path.exists(".mic_muted"):
                         self.mic_stream.add(chunk)
                         self.session_recorder.add(chunk)
+                    else:
+                        # Muted: record silence of the same length so the timeline
+                        # stays correct without storing the actual speech.
+                        silence = AudioChunk(
+                            source=chunk.source,
+                            timestamp_us=chunk.timestamp_us,
+                            samples=np.zeros(len(chunk.samples), dtype=np.float32),
+                        )
+                        self.session_recorder.add(silence)
                 else:
                     self.loop_stream.add(chunk)
                     self.session_recorder.add(chunk)
 
-                self._process_stream(self.mic_stream, SOURCE_MIC)
-                self._process_stream(self.loop_stream, SOURCE_LOOPBACK)
+                # Collect from both sources then sort by wall-clock time before
+                # sending so the live transcript is always chronologically ordered.
+                pending = (
+                    self._process_stream(self.mic_stream, SOURCE_MIC) +
+                    self._process_stream(self.loop_stream, SOURCE_LOOPBACK)
+                )
+                for msg in sorted(pending, key=lambda m: m["start_us"]):
+                    self.writer.send(msg)
+                    with self._segments_lock:
+                        self._segments.append(msg)
 
         except KeyboardInterrupt:
             log.info("session_interrupted")
