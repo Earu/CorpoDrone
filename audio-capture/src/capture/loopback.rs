@@ -122,7 +122,14 @@ mod macos_sck {
         stopped: Arc<AtomicBool>,
     ) -> Result<Arc<Mutex<CaptureState>>> {
         Ok(Arc::new(Mutex::new(CaptureState {
-            resampler: ToWhisper::new(48_000u32, 2u16)?,
+            // Request mono so SCKit handles the downmix. This avoids the
+            // non-interleaved vs interleaved ambiguity: with channel_count=2,
+            // CoreAudio delivers two separate mono buffers that, when naively
+            // concatenated, produce [L0..Ln R0..Rn] instead of [L0 R0 L1 R1…],
+            // causing the resampler to treat adjacent same-channel samples as
+            // stereo pairs and output garbage — especially for VoIP apps like
+            // Teams/Zoom that often use a different native channel layout.
+            resampler: ToWhisper::new(48_000u32, 1u16)?,
             accumulated: Vec::new(),
             tx,
             stopped,
@@ -134,7 +141,7 @@ mod macos_sck {
             .with_captures_audio(true)
             .with_excludes_current_process_audio(false)
             .with_sample_rate(48_000)
-            .with_channel_count(2)
+            .with_channel_count(1) // mono — SCKit downmixes; avoids non-interleaved layout bugs
             // Minimal video so SCKit is happy; we only use the audio callbacks.
             .with_width(2)
             .with_height(2)
