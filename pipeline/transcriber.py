@@ -67,14 +67,23 @@ class Transcriber:
         if self.torch_device == "mps":
             try:
                 import mlx_whisper
+                from huggingface_hub import snapshot_download
                 self._mlx_whisper = mlx_whisper
-                self._mlx_repo = _MLX_MODEL_MAP.get(model_name, f"mlx-community/whisper-{model_name}-mlx")
+                repo = _MLX_MODEL_MAP.get(model_name, f"mlx-community/whisper-{model_name}-mlx")
                 self._use_mlx = True
-                # Pre-load model now so HuggingFace download/verification happens at startup,
-                # not on the first transcribe() call mid-session.
-                log.info("mlx_whisper_loading", repo=self._mlx_repo)
-                mlx_whisper.load_models.load_model(self._mlx_repo)
-                log.info("mlx_whisper_loaded", repo=self._mlx_repo)
+                # Resolve to a local directory path now. If the model is already
+                # cached we use local_files_only so no network call is made.
+                # If it isn't cached yet (first run) we fall back to a normal download.
+                # Passing the local path to transcribe() later means mlx-whisper's
+                # load_model() finds an existing directory and skips snapshot_download
+                # entirely — no "Fetching N files" during recording sessions.
+                log.info("mlx_whisper_resolving", repo=repo)
+                try:
+                    self._mlx_local_path = snapshot_download(repo, local_files_only=True)
+                except Exception:
+                    log.info("mlx_whisper_downloading", repo=repo)
+                    self._mlx_local_path = snapshot_download(repo)
+                log.info("mlx_whisper_loaded", path=self._mlx_local_path)
             except ImportError:
                 log.info("mlx_whisper_not_found_falling_back")
 
@@ -174,7 +183,7 @@ class Transcriber:
     def _transcribe_mlx(self, audio: np.ndarray) -> List[Dict[str, Any]]:
         result = self._mlx_whisper.transcribe(
             audio,
-            path_or_hf_repo=self._mlx_repo,
+            path_or_hf_repo=self._mlx_local_path,
             word_timestamps=True,
             language="en",
             condition_on_previous_text=False,
