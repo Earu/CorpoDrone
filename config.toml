@@ -21,10 +21,5 @@ window_seconds = 20.0
 step_seconds = 3.0
 
 # Summarization via Ollama (generated once when Stop is pressed)
-summarize = true
-# Whisper model used for the final full-session re-transcription (better quality than streaming)
-summarize_model = "medium"
 ollama_model = "mistral"
 ollama_host = "http://localhost:11434"
-
-[server]

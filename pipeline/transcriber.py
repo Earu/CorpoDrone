@@ -173,6 +173,7 @@ class Transcriber:
             path_or_hf_repo=self._mlx_repo,
             word_timestamps=True,
             language="en",
+            condition_on_previous_text=False,
         )
         segments = []
         for seg in result.get("segments", []):
