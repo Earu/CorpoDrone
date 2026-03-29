@@ -17,7 +17,191 @@
       <h1 id="landing-title">CORPO<span class="hi">DRONE</span></h1>
       <p id="landing-sub">// AUDIO INTELLIGENCE SYSTEM</p>
       <button id="btn-start" onclick="startRecording()" disabled>LOADING...</button>
-      <button class="btn-voices" onclick="openVoicesModal()">VOICE DATABASE</button>
+      <div class="landing-secondary-btns">
+        <button class="btn-voices" onclick="openVoicesModal()">VOICE DATABASE</button>
+        <button class="btn-settings-gear" onclick="openSettings()" title="Settings">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="3"/>
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+          </svg>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Settings page ─────────────────────────────────────────────── -->
+  <div id="settings" class="hidden">
+    <header>
+      <div id="brand">
+        <h1>CORPO<span class="hi">DRONE</span></h1>
+        <div class="header-indicators">
+          <span class="status-label">SETTINGS</span>
+        </div>
+      </div>
+      <div class="header-right">
+        <button class="btn-ghost" onclick="closeSettings()">Cancel</button>
+        <button class="btn-modal-primary" onclick="saveSettings()">Save</button>
+      </div>
+    </header>
+    <div id="settings-body">
+
+      <div class="settings-group">
+        <div class="settings-group-title">TRANSCRIPTION</div>
+
+        <div class="settings-row">
+          <label class="settings-label">Whisper model</label>
+          <div class="settings-control">
+            <select class="settings-select" id="s-whisper_model">
+              <option value="tiny">tiny</option>
+              <option value="base">base</option>
+              <option value="small">small</option>
+              <option value="medium">medium</option>
+              <option value="large-v3">large-v3</option>
+            </select>
+            <span class="settings-hint">Larger = more accurate but slower</span>
+          </div>
+        </div>
+
+        <div class="settings-row">
+          <label class="settings-label">Device</label>
+          <div class="settings-control">
+            <select class="settings-select" id="s-whisper_device">
+              <option value="auto">auto</option>
+              <option value="cuda">cuda</option>
+              <option value="cpu">cpu</option>
+            </select>
+            <span class="settings-hint">auto detects GPU/MPS/CPU</span>
+          </div>
+        </div>
+
+        <div class="settings-row">
+          <label class="settings-label">Compute type</label>
+          <div class="settings-control">
+            <select class="settings-select" id="s-whisper_compute_type">
+              <option value="auto">auto</option>
+              <option value="float16">float16</option>
+              <option value="int8">int8</option>
+            </select>
+            <span class="settings-hint">float16 requires CUDA; int8 is fastest on CPU</span>
+          </div>
+        </div>
+
+        <div class="settings-row">
+          <label class="settings-label">Window size</label>
+          <div class="settings-control">
+            <input class="settings-input settings-input-sm" type="number" id="s-window_seconds" min="5" max="60" step="1">
+            <span class="settings-hint">seconds of audio per transcription step (15–30 recommended)</span>
+          </div>
+        </div>
+
+        <div class="settings-row">
+          <label class="settings-label">Step interval</label>
+          <div class="settings-control">
+            <input class="settings-input settings-input-sm" type="number" id="s-step_seconds" min="1" max="15" step="0.5">
+            <span class="settings-hint">seconds between live transcription updates (3–5 recommended)</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="settings-group">
+        <div class="settings-group-title">DIARIZATION</div>
+
+        <div class="settings-row">
+          <label class="settings-label">Enable diarization</label>
+          <div class="settings-control">
+            <label class="settings-toggle">
+              <input type="checkbox" id="s-diarize" onchange="settingsToggle('diarize')">
+              <span class="settings-toggle-track"><span class="settings-toggle-thumb"></span></span>
+            </label>
+          </div>
+        </div>
+
+        <div class="settings-row settings-dependent" data-depends="diarize">
+          <label class="settings-label">HuggingFace token</label>
+          <div class="settings-control">
+            <div class="settings-input-group">
+              <input class="settings-input" type="password" id="s-hf_token" placeholder="hf_…" autocomplete="off">
+              <button class="btn-reveal" id="btn-reveal-token" onclick="toggleTokenReveal()" title="Show / hide token">
+                <svg id="icon-eye" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>
+                </svg>
+                <svg id="icon-eye-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="display:none">
+                  <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/>
+                </svg>
+              </button>
+            </div>
+            <span class="settings-hint">Required for pyannote speaker diarization</span>
+          </div>
+        </div>
+
+        <div class="settings-row settings-row-pair settings-dependent" data-depends="diarize">
+          <label class="settings-label">Speaker count</label>
+          <div class="settings-control settings-control-pair">
+            <div class="settings-pair-field">
+              <span class="settings-pair-label">MIN</span>
+              <input class="settings-input settings-input-xs" type="number" id="s-min_speakers" min="1" max="20" step="1">
+            </div>
+            <div class="settings-pair-field">
+              <span class="settings-pair-label">MAX</span>
+              <input class="settings-input settings-input-xs" type="number" id="s-max_speakers" min="1" max="20" step="1">
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="settings-group">
+        <div class="settings-group-title">SPEAKER RECOGNITION</div>
+
+        <div class="settings-row">
+          <label class="settings-label">Enrollment after session</label>
+          <div class="settings-control">
+            <label class="settings-toggle">
+              <input type="checkbox" id="s-speaker_enroll" onchange="settingsToggle('speaker_enroll')">
+              <span class="settings-toggle-track"><span class="settings-toggle-thumb"></span></span>
+            </label>
+          </div>
+        </div>
+
+        <div class="settings-row settings-dependent" data-depends="speaker_enroll">
+          <label class="settings-label">Match threshold</label>
+          <div class="settings-control">
+            <input class="settings-input settings-input-sm" type="number" id="s-speaker_identify_threshold" min="0" max="1" step="0.01">
+            <span class="settings-hint">Cosine similarity for voice match (0.5–0.7 recommended)</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="settings-group">
+        <div class="settings-group-title">SUMMARIZATION</div>
+
+        <div class="settings-row">
+          <label class="settings-label">Enable debrief summary</label>
+          <div class="settings-control">
+            <label class="settings-toggle">
+              <input type="checkbox" id="s-summarize" onchange="settingsToggle('summarize')">
+              <span class="settings-toggle-track"><span class="settings-toggle-thumb"></span></span>
+            </label>
+          </div>
+        </div>
+
+        <div class="settings-row settings-dependent" data-depends="summarize">
+          <label class="settings-label">Ollama model</label>
+          <div class="settings-control">
+            <input class="settings-input" type="text" id="s-ollama_model" placeholder="mistral">
+            <span class="settings-hint">Any model pulled in Ollama (mistral, llama3, gemma, …)</span>
+          </div>
+        </div>
+
+        <div class="settings-row settings-dependent" data-depends="summarize">
+          <label class="settings-label">Ollama host</label>
+          <div class="settings-control">
+            <input class="settings-input" type="text" id="s-ollama_host" placeholder="http://localhost:11434">
+          </div>
+        </div>
+      </div>
+
+      <p class="settings-restart-note">Changes take effect after restarting the app.</p>
+
     </div>
   </div>
 

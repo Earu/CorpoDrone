@@ -271,6 +271,203 @@ async fn stop_recording(app: AppHandle) -> Result<serde_json::Value, String> {
     Ok(serde_json::json!({ "ok": true }))
 }
 
+/// Read config.toml and return all [python] settings as JSON.
+/// Missing keys return their pipeline defaults.
+#[tauri::command]
+fn get_settings() -> serde_json::Value {
+    let mut s = serde_json::json!({
+        "whisper_model":               "small",
+        "whisper_device":              "auto",
+        "whisper_compute_type":        "auto",
+        "diarize":                     true,
+        "hf_token":                    "",
+        "min_speakers":                1,
+        "max_speakers":                8,
+        "window_seconds":              20.0,
+        "step_seconds":                3.0,
+        "summarize":                   true,
+        "ollama_model":                "mistral",
+        "ollama_host":                 "http://localhost:11434",
+        "speaker_enroll":              true,
+        "speaker_identify_threshold":  0.58,
+    });
+
+    let text = match std::fs::read_to_string("config.toml") {
+        Ok(t) => t,
+        Err(_) => return s,
+    };
+
+    let m = s.as_object_mut().unwrap();
+    let mut in_python = false;
+    for raw in text.lines() {
+        let line = raw.trim();
+        if line.starts_with('[') {
+            in_python = line == "[python]";
+            continue;
+        }
+        if !in_python || line.starts_with('#') { continue; }
+        let Some((k, rest)) = line.split_once('=') else { continue };
+        let k = k.trim();
+        // strip inline comment then quotes
+        let v = rest.split('#').next().unwrap_or("").trim().trim_matches('"').trim_matches('\'');
+        match k {
+            "whisper_model" | "whisper_device" | "whisper_compute_type" |
+            "ollama_model"  | "ollama_host"    | "hf_token" => {
+                m.insert(k.to_string(), serde_json::Value::String(v.to_string()));
+            }
+            "diarize" | "summarize" | "speaker_enroll" => {
+                m.insert(k.to_string(), serde_json::Value::Bool(v == "true"));
+            }
+            "min_speakers" | "max_speakers" => {
+                if let Ok(n) = v.parse::<i64>() {
+                    m.insert(k.to_string(), n.into());
+                }
+            }
+            "window_seconds" | "step_seconds" | "speaker_identify_threshold" => {
+                if let Ok(f) = v.parse::<f64>() {
+                    m.insert(k.to_string(), serde_json::json!(f));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // If hf_token wasn't set via config.toml, fall back to HUGGINGFACE_TOKEN in .env
+    if m.get("hf_token").and_then(|v| v.as_str()).unwrap_or("").is_empty() {
+        if let Ok(env_text) = std::fs::read_to_string(".env") {
+            for line in env_text.lines() {
+                let line = line.trim();
+                if line.starts_with('#') { continue; }
+                if let Some(val) = line.strip_prefix("HUGGINGFACE_TOKEN=") {
+                    let val = val.trim().trim_matches('"').trim_matches('\'');
+                    if !val.is_empty() {
+                        m.insert("hf_token".to_string(), serde_json::Value::String(val.to_string()));
+                    }
+                    break;
+                }
+            }
+        }
+    }
+
+    s
+}
+
+fn fmt_float(f: f64) -> String {
+    let s = f.to_string();
+    if s.contains('.') { s } else { format!("{s}.0") }
+}
+
+/// Write updated settings back to config.toml, preserving any [server] section.
+/// If a HuggingFace token is present, sends a prefetch_diarizer command to the
+/// pipeline so the pyannote model is downloaded in the background immediately.
+#[tauri::command]
+async fn save_settings(
+    stdin_state: State<'_, Arc<PythonStdin>>,
+    settings: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let m = settings.as_object().ok_or("expected object")?;
+    macro_rules! str_val {
+        ($k:expr, $d:expr) => {
+            m.get($k).and_then(|v| v.as_str()).unwrap_or($d)
+        };
+    }
+    macro_rules! bool_val {
+        ($k:expr, $d:expr) => {
+            m.get($k).and_then(|v| v.as_bool()).unwrap_or($d)
+        };
+    }
+    macro_rules! i64_val {
+        ($k:expr, $d:expr) => {
+            m.get($k).and_then(|v| v.as_i64()).unwrap_or($d)
+        };
+    }
+    macro_rules! f64_val {
+        ($k:expr, $d:expr) => {
+            m.get($k).and_then(|v| v.as_f64()).unwrap_or($d)
+        };
+    }
+
+    // Preserve any [server] section from the existing file.
+    let existing = std::fs::read_to_string("config.toml").unwrap_or_default();
+    let mut server_block = String::new();
+    let mut in_server = false;
+    for line in existing.lines() {
+        let t = line.trim();
+        if t.starts_with('[') {
+            in_server = t == "[server]";
+        }
+        if in_server {
+            server_block.push_str(line);
+            server_block.push('\n');
+        }
+    }
+
+    let python_block = format!(
+"# CorpoDrone configuration
+# Edit this file to configure the pipeline without recompiling.
+
+[python]
+# Whisper model size: tiny / base / small / medium / large-v3
+whisper_model = \"{whisper_model}\"
+whisper_device = \"{whisper_device}\"
+whisper_compute_type = \"{whisper_compute_type}\"
+
+# Speaker diarization (requires HuggingFace token)
+diarize = {diarize}
+hf_token = \"{hf_token}\"
+min_speakers = {min_speakers}
+max_speakers = {max_speakers}
+
+# Sliding window config (seconds)
+window_seconds = {window_seconds}
+step_seconds = {step_seconds}
+
+# Summarization via Ollama
+summarize = {summarize}
+ollama_model = \"{ollama_model}\"
+ollama_host = \"{ollama_host}\"
+
+# Speaker recognition
+speaker_enroll = {speaker_enroll}
+speaker_identify_threshold = {speaker_identify_threshold}
+",
+        whisper_model             = str_val!("whisper_model", "small"),
+        whisper_device            = str_val!("whisper_device", "auto"),
+        whisper_compute_type      = str_val!("whisper_compute_type", "auto"),
+        diarize                   = bool_val!("diarize", true),
+        hf_token                  = str_val!("hf_token", ""),
+        min_speakers              = i64_val!("min_speakers", 1),
+        max_speakers              = i64_val!("max_speakers", 8),
+        window_seconds            = fmt_float(f64_val!("window_seconds", 20.0)),
+        step_seconds              = fmt_float(f64_val!("step_seconds", 3.0)),
+        summarize                 = bool_val!("summarize", true),
+        ollama_model              = str_val!("ollama_model", "mistral"),
+        ollama_host               = str_val!("ollama_host", "http://localhost:11434"),
+        speaker_enroll            = bool_val!("speaker_enroll", true),
+        speaker_identify_threshold = fmt_float(f64_val!("speaker_identify_threshold", 0.58)),
+    );
+
+    let out = if server_block.is_empty() {
+        python_block
+    } else {
+        format!("{python_block}\n{server_block}")
+    };
+
+    std::fs::write("config.toml", out).map_err(|e| e.to_string())?;
+
+    // If a HuggingFace token was provided, ask the pipeline to pre-download
+    // the pyannote diarization model in the background right now.
+    let hf_token = str_val!("hf_token", "");
+    if !hf_token.is_empty() {
+        send_python_cmd(
+            &stdin_state,
+            serde_json::json!({ "cmd": "prefetch_diarizer", "hf_token": hf_token }),
+        ).await;
+    }
+
+    Ok(serde_json::json!({ "ok": true }))
+}
+
 #[tauri::command]
 async fn get_ollama_config(
     cfg: State<'_, Arc<Config>>,
@@ -740,6 +937,8 @@ pub fn run() {
         .manage(Arc::clone(&python_stdin))
         .invoke_handler(tauri::generate_handler![
             get_status,
+            get_settings,
+            save_settings,
             list_loopback_apps,
             start_recording,
             stop_recording,

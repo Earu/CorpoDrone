@@ -450,6 +450,101 @@ function newSession() {
   showPage('landing');
 }
 
+// ---- Settings ----
+
+async function openSettings() {
+  const s = await invoke('get_settings');
+
+  // Populate selects and inputs
+  const set = (id, val) => {
+    const el = document.getElementById('s-' + id);
+    if (!el) return;
+    if (el.type === 'checkbox') el.checked = !!val;
+    else el.value = val ?? '';
+  };
+
+  set('whisper_model',              s.whisper_model);
+  set('whisper_device',             s.whisper_device);
+  set('whisper_compute_type',       s.whisper_compute_type);
+  set('window_seconds',             s.window_seconds);
+  set('step_seconds',               s.step_seconds);
+  set('diarize',                    s.diarize);
+  set('hf_token',                   s.hf_token);
+  set('min_speakers',               s.min_speakers);
+  set('max_speakers',               s.max_speakers);
+  set('speaker_enroll',             s.speaker_enroll);
+  set('speaker_identify_threshold', s.speaker_identify_threshold);
+  set('summarize',                  s.summarize);
+  set('ollama_model',               s.ollama_model);
+  set('ollama_host',                s.ollama_host);
+
+  // Sync dependent row visibility
+  _syncSettingsDependents('diarize');
+  _syncSettingsDependents('speaker_enroll');
+  _syncSettingsDependents('summarize');
+
+  showPage('settings');
+}
+
+function closeSettings() {
+  showPage('landing');
+}
+
+function settingsToggle(key) {
+  _syncSettingsDependents(key);
+}
+
+function toggleTokenReveal() {
+  const input = document.getElementById('s-hf_token');
+  const eyeOn  = document.getElementById('icon-eye');
+  const eyeOff = document.getElementById('icon-eye-off');
+  const revealing = input.type === 'password';
+  input.type = revealing ? 'text' : 'password';
+  eyeOn.style.display  = revealing ? 'none'  : '';
+  eyeOff.style.display = revealing ? ''      : 'none';
+}
+
+function _syncSettingsDependents(key) {
+  const checked = document.getElementById('s-' + key)?.checked ?? false;
+  document.querySelectorAll(`.settings-dependent[data-depends="${key}"]`).forEach(row => {
+    row.classList.toggle('settings-disabled', !checked);
+  });
+}
+
+async function saveSettings() {
+  const get = (id) => {
+    const el = document.getElementById('s-' + id);
+    if (!el) return undefined;
+    if (el.type === 'checkbox') return el.checked;
+    if (el.type === 'number')   return parseFloat(el.value);
+    return el.value;
+  };
+
+  const settings = {
+    whisper_model:               get('whisper_model'),
+    whisper_device:              get('whisper_device'),
+    whisper_compute_type:        get('whisper_compute_type'),
+    window_seconds:              get('window_seconds'),
+    step_seconds:                get('step_seconds'),
+    diarize:                     get('diarize'),
+    hf_token:                    get('hf_token'),
+    min_speakers:                Math.round(get('min_speakers')),
+    max_speakers:                Math.round(get('max_speakers')),
+    speaker_enroll:              get('speaker_enroll'),
+    speaker_identify_threshold:  get('speaker_identify_threshold'),
+    summarize:                   get('summarize'),
+    ollama_model:                get('ollama_model'),
+    ollama_host:                 get('ollama_host'),
+  };
+
+  try {
+    await invoke('save_settings', { settings });
+    showPage('landing');
+  } catch (e) {
+    alert('Failed to save settings: ' + e);
+  }
+}
+
 async function copySummary() {
   const activeTab = document.querySelector('.debrief-tab.active')?.id;
   let text;
@@ -824,14 +919,14 @@ async function _doStartRecording(loopbackApps) {
 
 
 function currentPage() {
-  for (const id of ['landing', 'workspace', 'debrief']) {
+  for (const id of ['landing', 'workspace', 'debrief', 'settings']) {
     if (!document.getElementById(id).classList.contains('hidden')) return id;
   }
   return 'landing';
 }
 
 function showPage(page) {
-  ['landing', 'workspace', 'debrief'].forEach(id => {
+  ['landing', 'workspace', 'debrief', 'settings'].forEach(id => {
     document.getElementById(id).classList.toggle('hidden', id !== page);
   });
 }
