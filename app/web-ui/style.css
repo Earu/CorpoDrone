@@ -878,20 +878,64 @@ button.btn-ghost:hover { color: var(--text); border-color: var(--text-muted); }
   gap: 2px;
   max-height: 240px;
   overflow-y: auto;
-  margin: 6px 0 12px 22px;
+  margin: 6px 0 12px 0;
   padding-right: 4px;
 }
 .app-picker-app-row {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   font-family: var(--mono);
   font-size: 11px;
-  color: var(--text);
+  color: var(--text-sub);
   cursor: pointer;
-  padding: 3px 0;
+  padding: 5px 8px;
+  border: 1px solid transparent;
+  transition: color 0.1s, border-color 0.1s, background 0.1s;
 }
-.app-picker-app-row:hover { color: var(--accent); }
+.app-picker-app-row:hover {
+  color: var(--text);
+  border-color: var(--border-hi);
+  background: var(--surface);
+}
+.app-picker-app-row:has(.app-picker-check:checked) {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--accent-dim);
+}
+
+/* Custom checkbox */
+.app-picker-check {
+  appearance: none;
+  -webkit-appearance: none;
+  flex-shrink: 0;
+  width: 14px;
+  height: 14px;
+  border: 1px solid var(--border-hi);
+  background: transparent;
+  cursor: pointer;
+  position: relative;
+  transition: border-color 0.1s, background 0.1s;
+}
+.app-picker-app-row:hover .app-picker-check {
+  border-color: var(--text-muted);
+}
+.app-picker-check:checked {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.app-picker-check:checked::after {
+  content: '';
+  position: absolute;
+  left: 3px;
+  top: 0px;
+  width: 4px;
+  height: 8px;
+  border: 2px solid #000;
+  border-top: none;
+  border-left: none;
+  transform: rotate(45deg);
+}
 
 /* Ollama modal */
 #ollama-modal .modal-title { color: var(--warning); }

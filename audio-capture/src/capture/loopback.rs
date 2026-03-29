@@ -264,7 +264,36 @@ pub fn run(tx: Sender<AudioChunk>, chunk_ms: u32, target_bundles: Option<Vec<Str
     macos_sck::run(tx, chunk_ms, target_bundles)
 }
 
+/// Returns (name, bundle_id) for every running GUI application visible to
+/// ScreenCaptureKit. Requires Screen Recording permission only — no Automation
+/// permission needed. Returns an empty list on non-macOS platforms.
+#[cfg(target_os = "macos")]
+pub fn list_apps() -> Vec<(String, String)> {
+    use screencapturekit::prelude::*;
+    match SCShareableContent::get() {
+        Ok(content) => content
+            .applications()
+            .into_iter()
+            .filter_map(|app| {
+                let name = app.application_name();
+                let bid  = app.bundle_identifier();
+                if name.is_empty() || bid.is_empty() { None }
+                else { Some((name, bid)) }
+            })
+            .collect(),
+        Err(e) => {
+            tracing::warn!("list_apps: SCShareableContent::get failed: {e:?}");
+            vec![]
+        }
+    }
+}
+
 // ── Windows — WASAPI loopback ─────────────────────────────────────────────────
+
+#[cfg(windows)]
+pub fn list_apps() -> Vec<(String, String)> {
+    vec![]
+}
 
 #[cfg(windows)]
 pub fn run(tx: Sender<AudioChunk>, _chunk_ms: u32, _target_bundles: Option<Vec<String>>) -> Result<()> {
