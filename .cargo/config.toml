@@ -1,0 +1,6 @@
+[env]
+# Swift runtime libraries (libswift_Concurrency, libswiftCore, etc.) are
+# embedded in the OS on macOS 13+.  Without this, swiftc falls back to the
+# macOS 12 back-deployment shim and emits an @rpath dependency on
+# libswift_Concurrency.dylib, which doesn't exist as a standalone file.
+MACOSX_DEPLOYMENT_TARGET = "13.0"

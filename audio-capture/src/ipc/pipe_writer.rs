@@ -1,4 +1,6 @@
-use anyhow::{bail, Result};
+use anyhow::Result;
+#[cfg(windows)]
+use anyhow::bail;
 use crossbeam_channel::Receiver;
 use tracing::{info, warn};
 
