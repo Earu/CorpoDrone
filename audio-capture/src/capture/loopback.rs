@@ -1,7 +1,6 @@
 use anyhow::Result;
 use crossbeam_channel::Sender;
-use crate::capture::resampler::ToWhisper;
-use crate::ipc::{AudioChunk, AudioSource};
+use crate::ipc::AudioChunk;
 
 const CHUNK_FRAMES: usize = 1600; // 100ms at 16kHz
 
@@ -13,47 +12,62 @@ fn current_time_us() -> u64 {
         .as_micros() as u64
 }
 
-// ── macOS — ScreenCaptureKit system audio loopback ────────────────────────────
+// ── macOS — ScreenCaptureKit audio capture ────────────────────────────────────
+//
+// Two kinds of SCStream are created:
+//
+//   1. Display stream  — captures the system audio output mix (Firefox, Safari,
+//      YouTube, Spotify, system sounds, and most apps).
+//
+//   2. Per-app streams — one stream per running communication app (Discord,
+//      Slack, Teams, Zoom, …).  These apps route voice audio through helper
+//      processes that bypass the system mix, so they need their own stream.
+//      We poll shareable content every few seconds so apps launched after the
+//      session starts still get a stream (keyed by process ID).
+//
+// All streams send AudioChunk { source: Loopback } into the same channel, so
+// the downstream pipeline needs no changes.
 
 #[cfg(target_os = "macos")]
 mod macos_sck {
+    use std::collections::HashSet;
     use std::sync::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex,
     };
+    use std::time::{Duration, Instant};
     use anyhow::Result;
     use crossbeam_channel::Sender;
-    use tracing::info;
-
-    use core_media_rs::cm_sample_buffer::CMSampleBuffer;
-    use screencapturekit::{
-        shareable_content::SCShareableContent,
-        stream::{
-            configuration::SCStreamConfiguration,
-            content_filter::SCContentFilter,
-            output_trait::SCStreamOutputTrait,
-            output_type::SCStreamOutputType,
-            SCStream,
-        },
-    };
+    use screencapturekit::prelude::*;
 
     use crate::capture::resampler::ToWhisper;
     use crate::ipc::{AudioChunk, AudioSource};
     use super::{CHUNK_FRAMES, current_time_us};
+
+    /// Bundle IDs of apps that are known to bypass the system audio mix.
+    const COMM_APP_BUNDLE_IDS: &[&str] = &[
+        "com.hnc.Discord",
+        "com.tinyspeck.slackmacgap",
+        "com.microsoft.teams2",  // Teams (new)
+        "com.microsoft.teams",   // Teams Classic
+        "us.zoom.xos",
+    ];
+
+    /// How often to look for communication apps that started after capture began.
+    const POLL_COMM_APPS: Duration = Duration::from_secs(2);
 
     struct CaptureState {
         resampler: ToWhisper,
         accumulated: Vec<f32>,
         tx: Sender<AudioChunk>,
         stopped: Arc<AtomicBool>,
-        first_cb: bool,
     }
 
-    struct AudioOutput {
+    struct AudioHandler {
         state: Arc<Mutex<CaptureState>>,
     }
 
-    impl SCStreamOutputTrait for AudioOutput {
+    impl SCStreamOutputTrait for AudioHandler {
         fn did_output_sample_buffer(
             &self,
             sample_buffer: CMSampleBuffer,
@@ -63,23 +77,18 @@ mod macos_sck {
                 return;
             }
 
-            let audio_buf_list = match sample_buffer.get_audio_buffer_list() {
-                Ok(list) => list,
-                Err(e) => {
-                    tracing::warn!("Loopback: failed to get audio buffer list: {e:?}");
-                    return;
-                }
+            let audio_buf_list = match sample_buffer.audio_buffer_list() {
+                Some(list) => list,
+                None => return,
             };
 
             let mut pcm: Vec<f32> = Vec::new();
-            for i in 0..audio_buf_list.num_buffers() {
-                if let Some(buf) = audio_buf_list.get(i) {
-                    let bytes = buf.data();
-                    let samples = bytes
-                        .chunks_exact(4)
-                        .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]));
-                    pcm.extend(samples);
-                }
+            for buf in audio_buf_list.iter() {
+                let bytes = buf.data();
+                let samples = bytes
+                    .chunks_exact(4)
+                    .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]));
+                pcm.extend(samples);
             }
 
             if pcm.is_empty() {
@@ -87,12 +96,6 @@ mod macos_sck {
             }
 
             let mut s = self.state.lock().unwrap();
-            if s.first_cb {
-                s.first_cb = false;
-                tracing::info!("Loopback: first SCKit audio callback ({} samples, non-zero={})",
-                    pcm.len(),
-                    pcm.iter().any(|&v| v != 0.0));
-            }
             match s.resampler.process(&pcm) {
                 Ok(resampled) => {
                     s.accumulated.extend_from_slice(&resampled);
@@ -114,53 +117,165 @@ mod macos_sck {
         }
     }
 
-    pub fn run(tx: Sender<AudioChunk>, _chunk_ms: u32) -> Result<()> {
-        let stopped = Arc::new(AtomicBool::new(false));
-        let state = Arc::new(Mutex::new(CaptureState {
-            // Request mono 48kHz; SCKit resamples internally.
-            // ToWhisper then resamples 48kHz→16kHz.
-            resampler: ToWhisper::new(48_000u32, 1u16)?,
+    fn make_state(
+        tx: Sender<AudioChunk>,
+        stopped: Arc<AtomicBool>,
+    ) -> Result<Arc<Mutex<CaptureState>>> {
+        Ok(Arc::new(Mutex::new(CaptureState {
+            resampler: ToWhisper::new(48_000u32, 2u16)?,
             accumulated: Vec::new(),
             tx,
-            stopped: stopped.clone(),
-            first_cb: true,
-        }));
+            stopped,
+        })))
+    }
 
-        let mut displays = SCShareableContent::get()
-            .map_err(|e| anyhow::anyhow!("SCShareableContent::get failed: {e:?}"))?
-            .displays();
-        let display = displays
-            .first_mut()
-            .ok_or_else(|| anyhow::anyhow!(
-                "No display found — ensure screen recording permission is granted"
-            ))?;
+    fn audio_config() -> SCStreamConfiguration {
+        SCStreamConfiguration::new()
+            .with_captures_audio(true)
+            .with_excludes_current_process_audio(false)
+            .with_sample_rate(48_000)
+            .with_channel_count(2)
+            // Minimal video so SCKit is happy; we only use the audio callbacks.
+            .with_width(2)
+            .with_height(2)
+    }
 
-        info!("Loopback capture: SCStream on display");
+    fn is_comm_bundle(app: &SCRunningApplication) -> bool {
+        COMM_APP_BUNDLE_IDS
+            .iter()
+            .any(|&id| app.bundle_identifier() == id)
+    }
 
-        // Minimal 2×2 video frame; we only care about audio.
-        let config = SCStreamConfiguration::new()
-            .set_captures_audio(true)
-            .map_err(|e| anyhow::anyhow!("set_captures_audio: {e:?}"))?
-            .set_excludes_current_process_audio(false)
-            .map_err(|e| anyhow::anyhow!("set_excludes_current_process_audio: {e:?}"))?
-            .set_sample_rate(48_000)
-            .map_err(|e| anyhow::anyhow!("set_sample_rate: {e:?}"))?
-            .set_channel_count(1)
-            .map_err(|e| anyhow::anyhow!("set_channel_count: {e:?}"))?;
-
-        let filter = SCContentFilter::new().with_display_excluding_windows(display, &[]);
-        let mut stream = SCStream::new(&filter, &config);
-        stream.add_output_handler(AudioOutput { state }, SCStreamOutputType::Audio);
-        stream
-            .start_capture()
-            .map_err(|e| anyhow::anyhow!("start_capture: {e:?}"))?;
-        info!("Loopback capture started (ScreenCaptureKit)");
-
-        while !stopped.load(Ordering::Relaxed) {
-            std::thread::sleep(std::time::Duration::from_millis(50));
+    /// Start a per-app stream if `app` is a listed comm app and we do not already
+    /// have a stream for this process (PID).
+    fn try_start_comm_stream(
+        app: &SCRunningApplication,
+        display: &SCDisplay,
+        tx: &Sender<AudioChunk>,
+        stopped: &Arc<AtomicBool>,
+        tracked_pids: &mut HashSet<i32>,
+        app_streams: &mut Vec<SCStream>,
+    ) {
+        if !is_comm_bundle(app) {
+            return;
+        }
+        let pid = app.process_id();
+        if tracked_pids.contains(&pid) {
+            return;
         }
 
-        stream.stop_capture().ok();
+        let app_filter = SCContentFilter::create()
+            .with_display(display)
+            .with_including_applications(&[app], &[])
+            .build();
+
+        let app_state = match make_state(tx.clone(), stopped.clone()) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!(
+                    "Loopback: resampler init failed for {} (pid={}): {e}",
+                    app.application_name(),
+                    pid
+                );
+                return;
+            }
+        };
+
+        let mut app_stream = SCStream::new(&app_filter, &audio_config());
+        app_stream.add_output_handler(
+            AudioHandler { state: app_state },
+            SCStreamOutputType::Audio,
+        );
+        match app_stream.start_capture() {
+            Ok(()) => {
+                tracked_pids.insert(pid);
+                app_streams.push(app_stream);
+                tracing::info!(
+                    "Loopback: per-app stream started for {} (pid={pid})",
+                    app.application_name()
+                );
+            }
+            Err(e) => tracing::warn!(
+                "Loopback: failed to start stream for {} (pid={pid}): {e:?}",
+                app.bundle_identifier()
+            ),
+        }
+    }
+
+    pub fn run(tx: Sender<AudioChunk>, _chunk_ms: u32) -> Result<()> {
+        let stopped = Arc::new(AtomicBool::new(false));
+
+        let content = SCShareableContent::get()
+            .map_err(|e| anyhow::anyhow!("SCShareableContent::get failed: {e:?}"))?;
+
+        let display = content
+            .displays()
+            .into_iter()
+            .next()
+            .ok_or_else(|| anyhow::anyhow!(
+                "No display found — ensure Screen Recording permission is granted"
+            ))?;
+
+        // ── 1. Display stream (system audio mix) ──────────────────────────────
+        let display_filter = SCContentFilter::create()
+            .with_display(&display)
+            .with_excluding_windows(&[])
+            .build();
+
+        let display_state = make_state(tx.clone(), stopped.clone())?;
+        let mut display_stream = SCStream::new(&display_filter, &audio_config());
+        display_stream.add_output_handler(
+            AudioHandler { state: display_state },
+            SCStreamOutputType::Audio,
+        );
+        display_stream
+            .start_capture()
+            .map_err(|e| anyhow::anyhow!("display stream start_capture: {e:?}"))?;
+        tracing::info!("Loopback capture started (display stream)");
+
+        // ── 2. Per-app streams for communication apps (initial + later launches) ─
+        let mut app_streams: Vec<SCStream> = Vec::new();
+        let mut tracked_pids: HashSet<i32> = HashSet::new();
+        for app in content.applications() {
+            try_start_comm_stream(
+                &app,
+                &display,
+                &tx,
+                &stopped,
+                &mut tracked_pids,
+                &mut app_streams,
+            );
+        }
+
+        let mut next_comm_poll = Instant::now() + POLL_COMM_APPS;
+        while !stopped.load(Ordering::Relaxed) {
+            std::thread::sleep(Duration::from_millis(50));
+            if Instant::now() >= next_comm_poll {
+                next_comm_poll = Instant::now() + POLL_COMM_APPS;
+                match SCShareableContent::get() {
+                    Ok(fresh) => {
+                        if let Some(d) = fresh.displays().into_iter().next() {
+                            for app in fresh.applications() {
+                                try_start_comm_stream(
+                                    &app,
+                                    &d,
+                                    &tx,
+                                    &stopped,
+                                    &mut tracked_pids,
+                                    &mut app_streams,
+                                );
+                            }
+                        }
+                    }
+                    Err(e) => tracing::debug!(error=?e, "Loopback: SCShareableContent::get failed while polling"),
+                }
+            }
+        }
+
+        display_stream.stop_capture().ok();
+        for s in app_streams {
+            s.stop_capture().ok();
+        }
         Ok(())
     }
 }
