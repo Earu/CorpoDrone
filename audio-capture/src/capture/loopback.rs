@@ -215,7 +215,7 @@ mod macos_sck {
     /// Accessory (1) or Prohibited (2) activation policy and are excluded.
     ///
     /// Uses direct ObjC runtime FFI so no extra crate dependencies are needed.
-    fn is_regular_app(pid: i32) -> bool {
+    pub(super) fn is_regular_app(pid: i32) -> bool {
         use std::ffi::{c_char, c_void};
 
         // Link against the ObjC runtime and AppKit (always present on macOS).
@@ -223,6 +223,7 @@ mod macos_sck {
         extern "C" {
             fn objc_getClass(name: *const c_char) -> *mut c_void;
             fn sel_registerName(name: *const c_char) -> *const c_void;
+            fn objc_msgSend();
         }
         #[link(name = "AppKit", kind = "framework")]
         extern "C" {}
@@ -232,20 +233,15 @@ mod macos_sck {
             if cls.is_null() { return false; }
 
             let sel_for_pid = sel_registerName(c"runningApplicationWithProcessIdentifier:".as_ptr());
-            // Cast objc_msgSend to the exact signature for this call.
             // On AArch64/x86-64 macOS, integer args and id returns use the standard C ABI.
-            let msg_send_pid: unsafe extern "C" fn(*mut c_void, *const c_void, i32) -> *mut c_void = {
-                extern "C" { fn objc_msgSend(rcv: *mut c_void, sel: *const c_void, ...) -> *mut c_void; }
-                std::mem::transmute(objc_msgSend as unsafe extern "C" fn(_, _, ...) -> _)
-            };
+            let msg_send_pid: unsafe extern "C" fn(*mut c_void, *const c_void, i32) -> *mut c_void =
+                std::mem::transmute(objc_msgSend as unsafe extern "C" fn());
             let app = msg_send_pid(cls, sel_for_pid, pid);
             if app.is_null() { return false; }
 
             let sel_policy = sel_registerName(c"activationPolicy".as_ptr());
-            let msg_send_policy: unsafe extern "C" fn(*mut c_void, *const c_void) -> isize = {
-                extern "C" { fn objc_msgSend(rcv: *mut c_void, sel: *const c_void, ...) -> *mut c_void; }
-                std::mem::transmute(objc_msgSend as unsafe extern "C" fn(_, _, ...) -> _)
-            };
+            let msg_send_policy: unsafe extern "C" fn(*mut c_void, *const c_void) -> isize =
+                std::mem::transmute(objc_msgSend as unsafe extern "C" fn());
             let policy = msg_send_policy(app, sel_policy);
             policy == 0 // NSApplicationActivationPolicyRegular
         }
@@ -322,7 +318,7 @@ pub fn list_apps() -> Vec<(String, String)> {
                 let name = app.application_name();
                 let bid  = app.bundle_identifier();
                 if name.is_empty() || bid.is_empty() { return None; }
-                if !is_regular_app(app.process_id()) { return None; }
+                if !macos_sck::is_regular_app(app.process_id()) { return None; }
                 Some((name, bid))
             })
             .collect(),
