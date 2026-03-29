@@ -21,5 +21,6 @@ window_seconds = 20.0
 step_seconds = 3.0
 
 # Summarization via Ollama (generated once when Stop is pressed)
+summarize = true
 ollama_model = "mistral"
 ollama_host = "http://localhost:11434"
