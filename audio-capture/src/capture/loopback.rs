@@ -82,18 +82,41 @@ mod macos_sck {
                 None => return,
             };
 
-            let mut pcm: Vec<f32> = Vec::new();
-            for buf in audio_buf_list.iter() {
-                let bytes = buf.data();
-                let samples = bytes
-                    .chunks_exact(4)
-                    .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]));
-                pcm.extend(samples);
-            }
+            // CoreAudio can deliver audio in two layouts:
+            //   Interleaved:     1 buffer containing [L0 R0 L1 R1 …]
+            //   Non-interleaved: N buffers, one per channel: [L0 L1 …] [R0 R1 …]
+            // Naively concatenating non-interleaved buffers produces [L0..Ln R0..Rn],
+            // which the resampler then misreads as interleaved, pairing same-channel
+            // adjacent samples instead of L+R pairs. Detect and interleave explicitly.
+            let channel_bufs: Vec<Vec<f32>> = audio_buf_list
+                .iter()
+                .map(|buf| {
+                    buf.data()
+                        .chunks_exact(4)
+                        .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+                        .collect::<Vec<f32>>()
+                })
+                .collect();
 
-            if pcm.is_empty() {
+            if channel_bufs.is_empty() || channel_bufs[0].is_empty() {
                 return;
             }
+
+            let pcm: Vec<f32> = if channel_bufs.len() == 1 {
+                // Single buffer: mono or already interleaved stereo — use directly.
+                channel_bufs.into_iter().next().unwrap()
+            } else {
+                // Non-interleaved: zip frames across channel buffers.
+                let n_frames = channel_bufs[0].len();
+                let n_ch = channel_bufs.len();
+                let mut interleaved = Vec::with_capacity(n_frames * n_ch);
+                for i in 0..n_frames {
+                    for ch in &channel_bufs {
+                        interleaved.push(*ch.get(i).unwrap_or(&0.0));
+                    }
+                }
+                interleaved
+            };
 
             let mut s = self.state.lock().unwrap();
             match s.resampler.process(&pcm) {
@@ -120,29 +143,36 @@ mod macos_sck {
     fn make_state(
         tx: Sender<AudioChunk>,
         stopped: Arc<AtomicBool>,
+        channels: u16,
     ) -> Result<Arc<Mutex<CaptureState>>> {
         Ok(Arc::new(Mutex::new(CaptureState {
-            // Request mono so SCKit handles the downmix. This avoids the
-            // non-interleaved vs interleaved ambiguity: with channel_count=2,
-            // CoreAudio delivers two separate mono buffers that, when naively
-            // concatenated, produce [L0..Ln R0..Rn] instead of [L0 R0 L1 R1…],
-            // causing the resampler to treat adjacent same-channel samples as
-            // stereo pairs and output garbage — especially for VoIP apps like
-            // Teams/Zoom that often use a different native channel layout.
-            resampler: ToWhisper::new(48_000u32, 1u16)?,
+            resampler: ToWhisper::new(48_000u32, channels)?,
             accumulated: Vec::new(),
             tx,
             stopped,
         })))
     }
 
-    fn audio_config() -> SCStreamConfiguration {
+    /// Display stream config: mono so SCKit downmixes the system mix cleanly.
+    fn display_audio_config() -> SCStreamConfiguration {
         SCStreamConfiguration::new()
             .with_captures_audio(true)
             .with_excludes_current_process_audio(false)
             .with_sample_rate(48_000)
-            .with_channel_count(1) // mono — SCKit downmixes; avoids non-interleaved layout bugs
-            // Minimal video so SCKit is happy; we only use the audio callbacks.
+            .with_channel_count(1)
+            .with_width(2)
+            .with_height(2)
+    }
+
+    /// Per-app stream config: stereo, because some apps (e.g. Discord) return
+    /// empty audio callbacks when channel_count=1 is requested.
+    /// The callback handles CoreAudio's non-interleaved layout explicitly.
+    fn app_audio_config() -> SCStreamConfiguration {
+        SCStreamConfiguration::new()
+            .with_captures_audio(true)
+            .with_excludes_current_process_audio(false)
+            .with_sample_rate(48_000)
+            .with_channel_count(2)
             .with_width(2)
             .with_height(2)
     }
@@ -176,7 +206,7 @@ mod macos_sck {
             .with_including_applications(&[app], &[])
             .build();
 
-        let app_state = match make_state(tx.clone(), stopped.clone()) {
+        let app_state = match make_state(tx.clone(), stopped.clone(), 2) {
             Ok(s) => s,
             Err(e) => {
                 tracing::warn!(
@@ -188,7 +218,7 @@ mod macos_sck {
             }
         };
 
-        let mut app_stream = SCStream::new(&app_filter, &audio_config());
+        let mut app_stream = SCStream::new(&app_filter, &app_audio_config());
         app_stream.add_output_handler(
             AudioHandler { state: app_state },
             SCStreamOutputType::Audio,
@@ -229,8 +259,8 @@ mod macos_sck {
             .with_excluding_windows(&[])
             .build();
 
-        let display_state = make_state(tx.clone(), stopped.clone())?;
-        let mut display_stream = SCStream::new(&display_filter, &audio_config());
+        let display_state = make_state(tx.clone(), stopped.clone(), 1)?;
+        let mut display_stream = SCStream::new(&display_filter, &display_audio_config());
         display_stream.add_output_handler(
             AudioHandler { state: display_state },
             SCStreamOutputType::Audio,
