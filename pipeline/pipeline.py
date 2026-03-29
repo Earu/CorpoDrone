@@ -460,10 +460,37 @@ class Pipeline:
 
         return unknowns
 
+    def _handle_misc_cmd(self, cmd: dict):
+        """
+        Handle non-session commands that can arrive at any time.
+        Currently supports:
+          {"cmd": "prefetch_diarizer", "hf_token": "hf_..."}
+        Runs the heavy initialisation in a daemon thread so it never blocks.
+        """
+        if cmd.get("cmd") != "prefetch_diarizer":
+            return
+        token = cmd.get("hf_token", "").strip()
+        if not token:
+            return
+        if self.diarizer and self.diarizer.available:
+            log.info("diarizer_already_ready")
+            return
+        log.info("diarizer_prefetch_starting")
+        def _fetch():
+            try:
+                d = Diarizer(token, self.cfg.min_speakers, self.cfg.max_speakers)
+                if d.available:
+                    self.diarizer = d
+                    log.info("diarizer_prefetch_complete")
+            except Exception as e:
+                log.warning("diarizer_prefetch_failed", error=str(e))
+        threading.Thread(target=_fetch, daemon=True, name="diarizer-prefetch").start()
+
     def _wait_for_mode(self) -> str:
         """
         Block until Tauri sends {"cmd": "set_mode", "mode": "..."} on stdin.
         No timeout — the user can take as long as they need.
+        Non-mode commands (e.g. prefetch_diarizer) are handled while waiting.
         """
         while True:
             try:
@@ -472,6 +499,7 @@ class Pipeline:
                     mode = cmd.get("mode", "retranscribe")
                     log.info("pipeline_mode_received", mode=mode)
                     return mode if mode in ("retranscribe", "live") else "retranscribe"
+                self._handle_misc_cmd(cmd)
             except queue.Empty:
                 continue
 
@@ -695,7 +723,7 @@ class Pipeline:
                 try:
                     chunk = self.receiver.queue.get(timeout=0.1)
                 except queue.Empty:
-                    # No data yet — still process buffered audio
+                    # No data yet — process buffered audio and handle any misc commands
                     pending = (
                         self._process_stream(self.mic_stream, SOURCE_MIC) +
                         self._process_stream(self.loop_stream, SOURCE_LOOPBACK)
@@ -704,6 +732,11 @@ class Pipeline:
                         self.writer.send(msg)
                         with self._segments_lock:
                             self._segments.append(msg)
+                    try:
+                        while True:
+                            self._handle_misc_cmd(self._cmd_queue.get_nowait())
+                    except queue.Empty:
+                        pass
                     continue
 
                 if chunk is None:
