@@ -70,6 +70,10 @@ class Transcriber:
                 self._mlx_whisper = mlx_whisper
                 self._mlx_repo = _MLX_MODEL_MAP.get(model_name, f"mlx-community/whisper-{model_name}-mlx")
                 self._use_mlx = True
+                # Pre-load model now so HuggingFace download/verification happens at startup,
+                # not on the first transcribe() call mid-session.
+                log.info("mlx_whisper_loading", repo=self._mlx_repo)
+                mlx_whisper.load_models.load_model(self._mlx_repo)
                 log.info("mlx_whisper_loaded", repo=self._mlx_repo)
             except ImportError:
                 log.info("mlx_whisper_not_found_falling_back")

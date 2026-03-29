@@ -254,6 +254,9 @@ class Pipeline:
         self._clip_accum: Dict[str, np.ndarray] = {}
         self._clip_store: Dict[str, List[np.ndarray]] = {}
         self._identified_in_session: set = set()
+        # Merged list of (start_us, end_us) ranges where the mic was muted.
+        # Used to suppress Whisper hallucinations on silence during re-transcription.
+        self._mic_muted_ranges: List[tuple] = []
 
         log.info("session_state_initialised", session_id=session)
 
@@ -620,6 +623,16 @@ class Pipeline:
             try:
                 segs = self._transcribe_chunked(audio, make_cb(range_start, range_end, speaker_label))
 
+                if source_tag == SOURCE_MIC and self._mic_muted_ranges:
+                    def _in_muted(seg_start_us: int, seg_end_us: int) -> bool:
+                        for m_start, m_end in self._mic_muted_ranges:
+                            if seg_start_us < m_end and seg_end_us > m_start:
+                                return True
+                        return False
+                    segs = [s for s in segs
+                            if not _in_muted(base_us + int(s["start"] * 1_000_000),
+                                             base_us + int(s["end"] * 1_000_000))]
+
                 if source_tag == SOURCE_LOOPBACK:
                     if self.diarizer and self.diarizer.available:
                         turns = self.diarizer.diarize(audio)
@@ -712,6 +725,14 @@ class Pipeline:
                             samples=np.zeros(len(chunk.samples), dtype=np.float32),
                         )
                         self.session_recorder.add(silence)
+                        # Track muted range so re-transcription can filter out
+                        # Whisper hallucinations on these silence blocks.
+                        duration_us = len(chunk.samples) * 1_000_000 // SAMPLE_RATE
+                        end_us = chunk.timestamp_us + duration_us
+                        if self._mic_muted_ranges and abs(self._mic_muted_ranges[-1][1] - chunk.timestamp_us) < 50_000:
+                            self._mic_muted_ranges[-1] = (self._mic_muted_ranges[-1][0], end_us)
+                        else:
+                            self._mic_muted_ranges.append((chunk.timestamp_us, end_us))
                 else:
                     self.loop_stream.add(chunk)
                     self.session_recorder.add(chunk)
