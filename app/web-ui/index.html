@@ -148,6 +148,24 @@
     </div>
   </div>
 
+  <!-- ── App picker modal (macOS loopback) ─────────────────────────── -->
+  <div id="app-picker-modal" class="modal-overlay hidden">
+    <div class="modal">
+      <div class="modal-header">
+        <div class="modal-title">SELECT AUDIO SOURCE</div>
+        <div class="modal-sub">Choose which app's audio to capture</div>
+      </div>
+      <div class="modal-body" id="app-picker-body">
+        <p class="end-session-modal-info" style="margin-bottom:8px">Select the apps whose audio you want to capture. They must already be running.</p>
+        <div id="app-picker-list" class="app-picker-list"></div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn-ghost" onclick="cancelAppPicker()">Cancel</button>
+        <button class="btn-modal-primary" id="app-picker-confirm" onclick="confirmAppPicker()" disabled>Start Recording</button>
+      </div>
+    </div>
+  </div>
+
   <!-- ── Ollama modal ──────────────────────────────────────────────── -->
   <div id="ollama-modal" class="modal-overlay hidden">
     <div class="modal">

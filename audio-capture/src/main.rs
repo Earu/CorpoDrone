@@ -23,6 +23,11 @@ struct Args {
     /// Audio chunk duration in milliseconds
     #[arg(long, default_value_t = 100)]
     chunk_ms: u32,
+
+    /// Comma-separated bundle IDs to capture instead of the system mix (macOS only).
+    /// Example: com.hnc.Discord,us.zoom.xos
+    #[arg(long)]
+    loopback_apps: Option<String>,
 }
 
 fn main() -> Result<()> {
@@ -33,6 +38,11 @@ fn main() -> Result<()> {
         .init();
 
     let args = Args::parse();
+
+    let loopback_apps: Option<Vec<String>> = args.loopback_apps.map(|s| {
+        s.split(',').map(|id| id.trim().to_string()).filter(|id| !id.is_empty()).collect()
+    });
+
     info!("Starting audio-capture, pipe={}", args.pipe);
 
     let (tx, rx) = crossbeam_channel::bounded::<ipc::AudioChunk>(64);
@@ -51,7 +61,7 @@ fn main() -> Result<()> {
     std::thread::Builder::new()
         .name("capture-loopback".into())
         .spawn(move || {
-            if let Err(e) = capture::loopback::run(tx_loop, chunk_ms) {
+            if let Err(e) = capture::loopback::run(tx_loop, chunk_ms, loopback_apps) {
                 tracing::error!("loopback capture error: {e:#}");
             }
         })?;

@@ -763,9 +763,58 @@ function setMuteState(muted) {
   btn.classList.toggle('muted', muted);
 }
 
+// ---- App picker (macOS loopback source selection) ----
 async function startRecording() {
+  // On macOS, show the app picker — user must select at least one app.
+  // On Windows list_loopback_apps returns [], so we skip straight to recording.
+  let apps = [];
   try {
-    await invoke('start_recording');
+    apps = await invoke('list_loopback_apps');
+  } catch (e) {
+    console.warn('list_loopback_apps failed:', e);
+  }
+
+  if (!apps || apps.length === 0) {
+    await _doStartRecording([]);
+    return;
+  }
+
+  _renderAppPickerList(apps);
+  document.getElementById('app-picker-modal').classList.remove('hidden');
+}
+
+function _renderAppPickerList(apps) {
+  const list = document.getElementById('app-picker-list');
+  const confirmBtn = document.getElementById('app-picker-confirm');
+
+  list.innerHTML = apps.map(a => `
+    <label class="app-picker-app-row">
+      <input type="checkbox" class="app-picker-check" value="${escHtml(a.bundle_id)}">
+      <span>${escHtml(a.name)}</span>
+    </label>
+  `).join('');
+
+  // Enable confirm only when at least one app is checked
+  list.addEventListener('change', () => {
+    const anyChecked = list.querySelector('.app-picker-check:checked') !== null;
+    confirmBtn.disabled = !anyChecked;
+  });
+}
+
+function cancelAppPicker() {
+  document.getElementById('app-picker-modal').classList.add('hidden');
+}
+
+async function confirmAppPicker() {
+  const selectedIds = [...document.querySelectorAll('.app-picker-check:checked')]
+    .map(cb => cb.value);
+  document.getElementById('app-picker-modal').classList.add('hidden');
+  await _doStartRecording(selectedIds);
+}
+
+async function _doStartRecording(loopbackApps) {
+  try {
+    await invoke('start_recording', { loopbackApps });
     _pipelineActive = true;
     setRecordingState(true);
   } catch (e) {
