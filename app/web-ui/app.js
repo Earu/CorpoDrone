@@ -202,6 +202,19 @@ async function _proceedWithMode(mode) {
   _debriefModeChosen = true;
   document.getElementById('debrief-choice').classList.add('hidden');
   document.getElementById('debrief-progress').classList.remove('hidden');
+
+  if (_pendingFileImportPath) {
+    const path = _pendingFileImportPath;
+    _pendingFileImportPath = null;
+    setOverallProgress(0, 'Loading audio file…');
+    try {
+      await invoke('import_audio_file', { path });
+    } catch (e) {
+      console.error('import_audio_file failed', e);
+    }
+    return;
+  }
+
   setOverallProgress(0, mode === 'retranscribe' ? 'Starting re-transcription…' : 'Building summary…');
   try {
     await invoke('set_pipeline_mode', { mode });
@@ -211,8 +224,9 @@ async function _proceedWithMode(mode) {
 }
 
 // ---- Ollama modal ----
-let _ollamaMode = null;       // pending pipeline mode to proceed with
-let _ollamaCfg = null;        // { host, model }
+let _ollamaMode = null;           // pending pipeline mode to proceed with
+let _ollamaCfg = null;            // { host, model }
+let _pendingFileImportPath = null; // set when file import is waiting for Ollama
 let _ollamaTimer = null;      // setInterval polling handle
 let _ollamaTimeout = null;    // setTimeout 30s handle
 
@@ -454,9 +468,7 @@ function _enterDebrief() {
   // or newSession().
   showPage('debrief');
   switchTab('debrief-tab');
-  document.getElementById('debrief-body').innerHTML =
-    '<div class="debrief-loader"><div class="debrief-loader-row"><div class="spinner"></div>' +
-    '<span>Session ended — processing…</span></div></div>';
+  document.getElementById('debrief-body').innerHTML = '';
 }
 
 function newSession() {
@@ -471,6 +483,7 @@ function newSession() {
   _sessionEnded = false;
   _deferEnrollment = false;
   _debriefModeChosen = false;
+  _pendingFileImportPath = null;
   _clearOllamaTimers();
   setMuteState(false);
   document.getElementById('transcript').innerHTML = '';
@@ -988,6 +1001,45 @@ function setPipelineReady(ready) {
   if (!btn) return;
   btn.disabled = !ready;
   btn.textContent = ready ? 'START SESSION' : 'LOADING...';
+  const importBtn = document.getElementById('btn-import');
+  if (importBtn) importBtn.disabled = !ready;
+}
+
+async function importAudioFile() {
+  let path;
+  try {
+    path = await invoke('pick_audio_file');
+  } catch (e) {
+    console.error('pick_audio_file failed', e);
+    return;
+  }
+  if (!path) return; // user cancelled
+
+  _enterDebrief('Processing audio file…');
+  _sessionEnded = true;
+
+  // Reuse the same Ollama availability check as a normal debrief mode
+  let ollamaCfg = null;
+  try { ollamaCfg = await invoke('get_ollama_config'); } catch (e) {}
+
+  if (ollamaCfg && ollamaCfg.summarize) {
+    let status = { running: false, has_model: false };
+    try { status = await invoke('check_ollama_status'); } catch (e) {}
+    if (!status.running) {
+      _pendingFileImportPath = path;
+      openOllamaModal('retranscribe', ollamaCfg, false);
+      return;
+    }
+    if (!status.has_model) {
+      _pendingFileImportPath = path;
+      openOllamaModal('retranscribe', ollamaCfg, true);
+      return;
+    }
+  }
+
+  // Ollama is ready — fire immediately
+  _pendingFileImportPath = path;
+  await _proceedWithMode('retranscribe');
 }
 
 function _resetPendingBar() {
