@@ -60,7 +60,7 @@ fn load_config() -> Config {
         python_script,
         speakers_file: "speakers.json".to_string(),
         ollama_host: "http://localhost:11434".to_string(),
-        ollama_model: "mistral".to_string(),
+        ollama_model: "llama3.1:8b".to_string(),
         summarize: true,
     };
 
@@ -286,7 +286,7 @@ fn get_settings() -> serde_json::Value {
         "window_seconds":              20.0,
         "step_seconds":                3.0,
         "summarize":                   true,
-        "ollama_model":                "mistral",
+        "ollama_model":                "llama3.1:8b",
         "ollama_host":                 "http://localhost:11434",
         "speaker_enroll":              true,
         "speaker_identify_threshold":  0.58,
@@ -441,7 +441,7 @@ speaker_identify_threshold = {speaker_identify_threshold}
         window_seconds            = fmt_float(f64_val!("window_seconds", 20.0)),
         step_seconds              = fmt_float(f64_val!("step_seconds", 3.0)),
         summarize                 = bool_val!("summarize", true),
-        ollama_model              = str_val!("ollama_model", "mistral"),
+        ollama_model              = str_val!("ollama_model", "llama3.1:8b"),
         ollama_host               = str_val!("ollama_host", "http://localhost:11434"),
         speaker_enroll            = bool_val!("speaker_enroll", true),
         speaker_identify_threshold = fmt_float(f64_val!("speaker_identify_threshold", 0.58)),
