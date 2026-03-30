@@ -8,6 +8,7 @@ pipeline/models/
 .env
 .venv
 .claude
+.vscode
 
 # Tauri generated files
 app/gen/

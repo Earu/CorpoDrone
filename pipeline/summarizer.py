@@ -9,35 +9,34 @@ import structlog
 log = structlog.get_logger(__name__)
 
 SYSTEM_PROMPT = """\
-You are a professional meeting secretary. Output a detailed meeting report in Markdown.
+You are a professional meeting secretary. The user message contains the full transcript only.
+Output a detailed meeting report in Markdown.
 
 STRICT RULES — do not break any of these:
 1. Output ONLY the report. No preamble, no "Here is the report", no commentary.
 2. Use EXACTLY the seven section headings below, in this order, with no extras.
 3. Every section must be present. Write "None." if a section has no content.
 4. Do NOT invent, infer, or hallucinate anything not explicitly stated in the transcript.
-5. Do NOT collapse or over-summarize. If a topic was discussed at length, give it proportional space.\
-"""
+5. Do NOT collapse or over-summarize. If a topic was discussed at length, give it proportional space.
 
-# Prefilled start forces the model to continue in the correct structure
-# rather than deciding its own format.
-ASSISTANT_PREFILL = """\
+Your report MUST be in this exact format:
 ## Overview
-
-"""
-
-USER_SUFFIX = """
-
----
-Write the full report now. Start directly with the ## Overview section content (it is already written above). Then continue with the remaining six sections in order:
-
 ## Participants
 ## Topics Discussed
 ## Decisions Made
 ## Action Items & Next Steps
 ## Open Questions
-## Notable Quotes"""
+## Notable Quotes
+"""
 
+# Transcript must be in a user turn — chat models treat system as instructions, not document text.
+USER_TRANSCRIPT_PREFIX = (
+    "Verbatim meeting transcript. Ground every claim in this text only; "
+    "if something is not stated, write \"None.\" for that part.\n\n"
+)
+
+# Lower temperature helps local models stick to the source (still not a guarantee).
+OLLAMA_CHAT_OPTIONS = {"temperature": 0.2, "top_p": 0.9}
 
 def _build_transcript_text(segments: List[Dict[str, Any]]) -> str:
     lines = []
@@ -96,8 +95,7 @@ class Summarizer:
             client = ollama.Client(host=self.host)
             messages = [
                 {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": text + USER_SUFFIX},
-                {"role": "assistant", "content": ASSISTANT_PREFILL},
+                {"role": "user", "content": USER_TRANSCRIPT_PREFIX + text},
             ]
 
             if progress_cb:
@@ -105,7 +103,12 @@ class Summarizer:
                 EXPECTED_CHARS = 3000  # detailed compte-rendu — used for asymptote
                 chunks = []
                 char_count = 0
-                for chunk in client.chat(model=self.model, messages=messages, stream=True):
+                for chunk in client.chat(
+                    model=self.model,
+                    messages=messages,
+                    stream=True,
+                    options=OLLAMA_CHAT_OPTIONS,
+                ):
                     msg = chunk.message if hasattr(chunk, "message") else chunk["message"]
                     part = msg.content if hasattr(msg, "content") else msg["content"]
                     if part:
@@ -116,13 +119,14 @@ class Summarizer:
                 progress_cb(100)
                 content = "".join(chunks).strip()
             else:
-                response = client.chat(model=self.model, messages=messages)
+                response = client.chat(
+                    model=self.model,
+                    messages=messages,
+                    options=OLLAMA_CHAT_OPTIONS,
+                )
                 msg = response.message if hasattr(response, "message") else response["message"]
                 content = msg.content if hasattr(msg, "content") else msg["content"]
                 content = content.strip()
-
-            # Prepend the prefilled header that the model continued from
-            content = ASSISTANT_PREFILL + content
 
             # Strip ```markdown ... ``` or ``` ... ``` wrappers some models add
             if content.startswith("```"):
