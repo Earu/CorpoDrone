@@ -9,35 +9,34 @@ import structlog
 log = structlog.get_logger(__name__)
 
 SYSTEM_PROMPT = """\
-You are a professional meeting secretary. Your job is to produce a thorough, detailed compte-rendu (meeting report) in Markdown from the transcript below.
+You are a professional meeting secretary. Output a detailed meeting report in Markdown.
 
-Cover every topic that was discussed — do not summarize too aggressively. If something was discussed for a while, give it proportional space. Write in full sentences where it adds clarity.
+STRICT RULES — do not break any of these:
+1. Output ONLY the report. No preamble, no "Here is the report", no commentary.
+2. Use EXACTLY the seven section headings below, in this order, with no extras.
+3. Every section must be present. Write "None." if a section has no content.
+4. Do NOT invent, infer, or hallucinate anything not explicitly stated in the transcript.
+5. Do NOT collapse or over-summarize. If a topic was discussed at length, give it proportional space.\
+"""
 
-Use this structure (include every section; write "None" if a section truly has no content):
-
+# Prefilled start forces the model to continue in the correct structure
+# rather than deciding its own format.
+ASSISTANT_PREFILL = """\
 ## Overview
-Two to four sentences describing the purpose, context, and outcome of the meeting.
+
+"""
+
+USER_SUFFIX = """
+
+---
+Write the full report now. Start directly with the ## Overview section content (it is already written above). Then continue with the remaining six sections in order:
 
 ## Participants
-List the speakers identified in the transcript.
-
 ## Topics Discussed
-For each major topic, write a sub-heading and a short paragraph or bullet list covering what was said, debated, or concluded on that topic. Be thorough.
-
 ## Decisions Made
-- Every decision or conclusion reached, with enough context to be understood later.
-
 ## Action Items & Next Steps
-- Every task, follow-up, or next step mentioned. Include owner and deadline if stated.
-
 ## Open Questions
-- Unresolved questions or points that were raised but not concluded.
-
-## Notable Quotes
-- Direct quotes worth preserving verbatim (use > blockquote syntax).
-
-Be thorough, factual, and complete. Do not invent information not present in the transcript. Do not truncate or abbreviate.\
-"""
+## Notable Quotes"""
 
 
 def _build_transcript_text(segments: List[Dict[str, Any]]) -> str:
@@ -97,7 +96,8 @@ class Summarizer:
             client = ollama.Client(host=self.host)
             messages = [
                 {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": text},
+                {"role": "user", "content": text + USER_SUFFIX},
+                {"role": "assistant", "content": ASSISTANT_PREFILL},
             ]
 
             if progress_cb:
@@ -120,6 +120,9 @@ class Summarizer:
                 msg = response.message if hasattr(response, "message") else response["message"]
                 content = msg.content if hasattr(msg, "content") else msg["content"]
                 content = content.strip()
+
+            # Prepend the prefilled header that the model continued from
+            content = ASSISTANT_PREFILL + content
 
             # Strip ```markdown ... ``` or ``` ... ``` wrappers some models add
             if content.startswith("```"):
