@@ -294,6 +294,37 @@ button.btn-ghost:hover { color: var(--text); border-color: var(--text-muted); }
   cursor: default;
 }
 
+.landing-start-row {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+}
+
+.btn-import-audio {
+  padding: 16px 20px;
+  background: var(--accent);
+  color: #000;
+  border: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: box-shadow 0.15s, background 0.15s;
+}
+.btn-import-audio:hover:not(:disabled) {
+  background: #d4ff20;
+  box-shadow: var(--accent-glow);
+}
+.btn-import-audio:disabled {
+  background: var(--border-hi);
+  color: var(--text-muted);
+  cursor: default;
+}
+.btn-import-audio svg {
+  width: 20px;
+  height: 20px;
+}
+
 /* ════════════════════════════════════════════════════════════════════
    WORKSPACE
    ════════════════════════════════════════════════════════════════════ */

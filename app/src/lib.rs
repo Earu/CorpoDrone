@@ -639,6 +639,35 @@ fn rename_speaker(person_id: String, name: String) -> serde_json::Value {
     serde_json::json!({ "ok": ok })
 }
 
+/// Open a native file-picker dialog and return the selected path (or null if cancelled).
+#[tauri::command]
+async fn pick_audio_file() -> Result<Option<String>, String> {
+    let path = tokio::task::spawn_blocking(|| {
+        rfd::FileDialog::new()
+            .add_filter("Audio", &["wav", "mp3", "m4a", "flac", "ogg", "aac", "wma", "opus", "mp4"])
+            .add_filter("All files", &["*"])
+            .pick_file()
+            .map(|p| p.to_string_lossy().into_owned())
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(path)
+}
+
+/// Tell the Python pipeline to process a local audio file and generate a debrief.
+#[tauri::command]
+async fn import_audio_file(
+    path: String,
+    stdin_state: State<'_, Arc<PythonStdin>>,
+) -> Result<serde_json::Value, String> {
+    send_python_cmd(
+        &stdin_state,
+        serde_json::json!({ "cmd": "process_audio_file", "path": path }),
+    )
+    .await;
+    Ok(serde_json::json!({ "ok": true }))
+}
+
 #[tauri::command]
 async fn update_speaker(
     speaker_id: String,
@@ -953,6 +982,8 @@ pub fn run() {
             enroll_speaker,
             delete_speaker,
             rename_speaker,
+            pick_audio_file,
+            import_audio_file,
         ])
         .setup(move |app| {
             let app_handle = app.handle().clone();

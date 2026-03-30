@@ -196,6 +196,12 @@ class CommandReader(threading.Thread):
                 log.warning("cmd_reader_invalid_json", line=line[:120])
 
 
+class _FileImportRequest(Exception):
+    """Raised inside _run_session to signal a file-import command was received."""
+    def __init__(self, path: str):
+        self.path = path
+
+
 class Pipeline:
     def __init__(self, cfg: Config):
         self.cfg = cfg
@@ -472,6 +478,11 @@ class Pipeline:
           {"cmd": "prefetch_diarizer", "hf_token": "hf_..."}
         Runs the heavy initialisation in a daemon thread so it never blocks.
         """
+        if cmd.get("cmd") == "process_audio_file":
+            path = cmd.get("path", "").strip()
+            if path:
+                raise _FileImportRequest(path)
+            return
         if cmd.get("cmd") != "prefetch_diarizer":
             return
         token = cmd.get("hf_token", "").strip()
@@ -895,6 +906,119 @@ class Pipeline:
 
         log.info("session_complete", session_id=self._session_id)
 
+    def _load_audio_file(self, path: str) -> np.ndarray:
+        """Load any audio file and return a 16 kHz mono float32 numpy array."""
+        import soundfile as sf
+
+        try:
+            audio, sr = sf.read(path, dtype="float32", always_2d=True)
+            audio = audio.mean(axis=1)  # stereo → mono
+        except Exception:
+            # soundfile can't handle mp3/m4a — fall back to torchaudio
+            import torchaudio  # type: ignore
+            waveform, sr = torchaudio.load(path)
+            if waveform.shape[0] > 1:
+                waveform = waveform.mean(dim=0)
+            audio = waveform.numpy()
+
+        if sr != SAMPLE_RATE:
+            import torch
+            import torchaudio.functional as F  # type: ignore
+            t = torch.from_numpy(audio).unsqueeze(0)
+            t = F.resample(t, sr, SAMPLE_RATE)
+            audio = t.squeeze(0).numpy()
+
+        return audio.astype(np.float32)
+
+    def _run_file_import(self, path: str):
+        """
+        Transcribe a local audio file and generate a debrief — same output events
+        as a normal retranscribe+summarize session but driven by a file, not live audio.
+        """
+        log.info("file_import_starting", path=path)
+
+        self.writer.send({"type": "progress", "stage": "retranscribe", "pct": 0,
+                          "label": "Loading audio file…"})
+        try:
+            audio = self._load_audio_file(path)
+        except Exception as e:
+            log.error("file_import_load_failed", error=str(e))
+            self.writer.send({"type": "final_summary", "text": "", "transcript": []})
+            return
+
+        log.info("file_import_loaded", seconds=round(len(audio) / SAMPLE_RATE))
+
+        # Transcribe
+        def transcribe_cb(pct):
+            self.writer.send({"type": "progress", "stage": "retranscribe",
+                              "pct": int(pct * 0.9), "label": "Transcribing…"})
+
+        try:
+            segs = self._transcribe_chunked(audio, transcribe_cb)
+        except Exception as e:
+            log.error("file_import_transcribe_failed", error=str(e))
+            self.writer.send({"type": "final_summary", "text": "", "transcript": []})
+            return
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+        # Diarize if available — assign speaker labels across the full file
+        if self.diarizer and self.diarizer.available and segs:
+            try:
+                turns = self.diarizer.diarize(audio)
+                segs = self.diarizer.assign_speakers(segs, turns)
+            except Exception as e:
+                log.warning("file_import_diarize_failed", error=str(e))
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+        self.writer.send({"type": "progress", "stage": "retranscribe", "pct": 95,
+                          "label": "Building transcript…"})
+
+        # Map pyannote labels → readable names
+        label_map: dict = {}
+        counter = 0
+        transcript_segs = []
+        for seg in segs:
+            text = seg.get("text", "").strip()
+            if not text:
+                continue
+            label = seg.get("speaker", "SPEAKER_00")
+            if label not in label_map:
+                counter += 1
+                label_map[label] = "Speaker" if counter == 1 else f"Speaker {counter}"
+            transcript_segs.append({
+                "speaker": label_map[label],
+                "text": text,
+                "start_us": int(seg["start"] * 1_000_000),
+            })
+
+        transcript_text = "\n".join(f"{s['speaker']}: {s['text']}" for s in transcript_segs)
+        self.writer.send({"type": "progress", "stage": "retranscribe", "pct": 100,
+                          "label": "Transcription complete"})
+
+        # Summarize
+        if self.summarizer and transcript_text:
+            self.writer.send({"type": "progress", "stage": "summarize", "pct": 0,
+                              "label": "Generating debrief…"})
+            self.summarizer.set_transcript_text(transcript_text)
+
+            def summarize_cb(pct):
+                self.writer.send({"type": "progress", "stage": "summarize",
+                                  "pct": pct, "label": "Generating debrief…"})
+
+            final = self.summarizer._summarize_now(progress_cb=summarize_cb)
+            self.writer.send({"type": "final_summary", "text": final or "",
+                              "transcript": transcript_segs})
+            self.summarizer.release()
+        else:
+            self.writer.send({"type": "final_summary", "text": "",
+                              "transcript": transcript_segs})
+
+        log.info("file_import_complete")
+
     def run(self):
         """
         Outer loop: run sessions back-to-back until the process is killed or
@@ -902,7 +1026,10 @@ class Pipeline:
         """
         try:
             while True:
-                self._run_session()
+                try:
+                    self._run_session()
+                except _FileImportRequest as req:
+                    self._run_file_import(req.path)
                 # Reset per-session state and start a fresh AudioReceiver for the next session
                 self._init_session_state()
         except KeyboardInterrupt:
