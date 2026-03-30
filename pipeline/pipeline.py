@@ -281,12 +281,17 @@ class Pipeline:
         segments = self.transcriber.transcribe(audio)
         if not segments:
             stream.emit([], win_start_abs)  # still advance committed position
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
             return []
 
         # Diarization
         if self.diarizer and self.diarizer.available:
             turns = self.diarizer.diarize(audio)
             segments = self.diarizer.assign_speakers(segments, turns)
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
         confirmed = stream.emit(segments, win_start_abs)
         source_name = "mic" if source_tag == SOURCE_MIC else "loopback"
@@ -648,6 +653,8 @@ class Pipeline:
                 _chunk_cb = None
 
             segs = self.transcriber.transcribe_with_progress(chunk, _chunk_cb)
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
             for seg in segs:
                 abs_start = offset_s + seg["start"]
                 abs_end   = offset_s + seg["end"]
@@ -748,6 +755,11 @@ class Pipeline:
         transcript_segs = [{"speaker": spk, "text": text, "start_us": us} for us, spk, text in result_segs]
 
         self.writer.send({"type": "progress", "stage": "retranscribe", "pct": 100, "label": "Re-transcription complete"})
+
+        # Free Whisper/pyannote GPU cache before the LLM loads onto the GPU.
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
         return transcript_text, transcript_segs
 
     def _fallback_transcript(self) -> str:
@@ -844,6 +856,12 @@ class Pipeline:
         if not ended_normally:
             return
 
+        # Free GPU memory held by the live-transcription sliding windows before
+        # post-processing — the Whisper/pyannote CUDA cache won't be needed again
+        # until the next session.
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
         # --- Post-processing ---
         if self._clip_store and self.cfg.speaker_enroll:
             enrollment_speakers = self._collect_enrollment_data()
@@ -871,6 +889,7 @@ class Pipeline:
 
             final = self.summarizer._summarize_now(progress_cb=summarize_progress_cb)
             self.writer.send({"type": "final_summary", "text": final or "", "transcript": transcript_segs})
+            self.summarizer.release()
         else:
             self.writer.send({"type": "final_summary", "text": "", "transcript": transcript_segs})
 

@@ -53,7 +53,7 @@ def _build_transcript_text(segments: List[Dict[str, Any]]) -> str:
 class Summarizer:
     def __init__(
         self,
-        model: str = "mistral",
+        model: str = "llama3.1:8b",
         host: str = "http://localhost:11434",
     ):
         self.model = model
@@ -129,3 +129,12 @@ class Summarizer:
         except Exception as e:
             log.error("summarize_failed", error=str(e))
             return ""
+
+    def release(self):
+        """Ask Ollama to evict the model from VRAM immediately (keep_alive=0)."""
+        try:
+            import ollama
+            ollama.Client(host=self.host).generate(model=self.model, prompt="", keep_alive=0)
+            log.info("ollama_model_released", model=self.model)
+        except Exception as e:
+            log.warning("ollama_release_failed", error=str(e))
