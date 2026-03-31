@@ -164,9 +164,8 @@ function showChoiceUI() {
   document.getElementById('debrief-progress').classList.add('hidden');
   document.getElementById('debrief-body').innerHTML = '';
   document.getElementById('btn-copy').style.display = 'none';
-  // Transcript tab stays empty until we have the final transcript
-  const el = document.getElementById('transcript-tab-body');
-  if (el) el.innerHTML = '<p class="tab-empty">Waiting for transcript…</p>';
+  // Show live transcript immediately; re-transcribe will replace this after processing
+  populateTranscriptTab(state.segments);
 }
 
 async function choosePipelineMode(mode) {
@@ -213,6 +212,16 @@ async function _proceedWithMode(mode) {
       console.error('import_audio_file failed', e);
     }
     return;
+  }
+
+  if (mode === 'retranscribe') {
+    _transcriptSegs = [];
+    const txEl = document.getElementById('transcript-tab-body');
+    if (txEl) txEl.innerHTML = '<p class="tab-empty">Re-transcribing audio…</p>';
+    const active = document.querySelector('.debrief-tab.active');
+    if (active && active.id === 'transcript-tab') {
+      document.getElementById('btn-copy').style.display = 'none';
+    }
   }
 
   setOverallProgress(0, mode === 'retranscribe' ? 'Starting re-transcription…' : 'Building summary…');
