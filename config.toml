@@ -26,4 +26,4 @@ speaker_enroll = true
 speaker_identify_threshold = 0.58
 
 # Microphone (empty = OS default; applies next recording)
-audio_input_device = "MacBook Pro Microphone"
+audio_input_device = ""
