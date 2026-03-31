@@ -1,7 +1,7 @@
 # !! Requires Python 3.11 or 3.12. Python 3.13 is NOT supported by WhisperX/PyAnnote yet.
 # torch / torchaudio: installed by ../setup.ps1 before this file (platform-specific wheels).
-# torch>=2.2.0
-# torchaudio>=2.2.0
+# Must stay <2.9: torchaudio 2.9+ removed torchaudio.AudioMetaData, breaking pyannote.audio.
+# Manual install: pip install 'torch>=2.5,<2.9' 'torchaudio>=2.5,<2.9'  (+ CUDA index on Windows if needed)
 
 # Transcription
 faster-whisper>=1.0.3
@@ -10,6 +10,10 @@ whisperx>=3.3.1
 # Diarization — requires HuggingFace token + model agreement
 # Accept terms at: https://hf.co/pyannote/speaker-diarization-3.1
 pyannote.audio>=3.3.2
+# pyannote 3.x calls hf_hub_download(..., use_auth_token=...); huggingface_hub 1.x removed
+# that shim, causing "unexpected keyword argument 'use_auth_token'". WhisperX also needs <1.
+# Hub 0.x also lacks is_offline_mode (hub 1.x API); pipeline/huggingface_hub_compat.py patches that.
+huggingface_hub>=0.28,<1
 
 # Audio
 soundfile>=0.12.1
