@@ -55,6 +55,26 @@
     <div id="settings-body">
 
       <div class="settings-group">
+        <div class="settings-group-title">AUDIO CAPTURE</div>
+
+        <div class="settings-row">
+          <label class="settings-label">Microphone</label>
+          <div class="settings-control">
+            <select class="settings-select" id="s-audio_input_device"></select>
+            <span class="settings-hint">Default follows the OS input device</span>
+          </div>
+        </div>
+
+        <div class="settings-row">
+          <label class="settings-label"></label>
+          <div class="settings-control">
+            <button type="button" class="btn-ghost" onclick="refreshAudioDevices()">Refresh device list</button>
+            <span class="settings-hint" id="audio-device-platform-hint"></span>
+          </div>
+        </div>
+      </div>
+
+      <div class="settings-group">
         <div class="settings-group-title">TRANSCRIPTION</div>
 
         <div class="settings-row">

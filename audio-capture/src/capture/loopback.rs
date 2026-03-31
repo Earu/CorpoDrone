@@ -300,7 +300,11 @@ mod macos_sck {
 }
 
 #[cfg(target_os = "macos")]
-pub fn run(tx: Sender<AudioChunk>, chunk_ms: u32, target_bundles: Option<Vec<String>>) -> Result<()> {
+pub fn run(
+    tx: Sender<AudioChunk>,
+    chunk_ms: u32,
+    target_bundles: Option<Vec<String>>,
+) -> Result<()> {
     macos_sck::run(tx, chunk_ms, target_bundles)
 }
 
@@ -337,7 +341,11 @@ pub fn list_apps() -> Vec<(String, String)> {
 }
 
 #[cfg(windows)]
-pub fn run(tx: Sender<AudioChunk>, _chunk_ms: u32, _target_bundles: Option<Vec<String>>) -> Result<()> {
+pub fn run(
+    tx: Sender<AudioChunk>,
+    _chunk_ms: u32,
+    _target_bundles: Option<Vec<String>>,
+) -> Result<()> {
     use std::collections::VecDeque;
     use tracing::{info, warn};
     use wasapi::*;

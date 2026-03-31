@@ -31,6 +31,10 @@ struct Args {
     /// Example: com.hnc.Discord,us.zoom.xos
     #[arg(long)]
     loopback_apps: Option<String>,
+
+    /// Microphone device name from `list-devices` (omit for OS default).
+    #[arg(long)]
+    mic_device: Option<String>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -38,6 +42,9 @@ enum Command {
     /// List running GUI applications for per-app loopback (macOS only; Linux prints []).
     /// Prints a JSON array of {name, bundle_id} objects to stdout, then exits.
     ListApps,
+    /// List input/output audio devices as JSON for the settings UI.
+    #[command(name = "list-devices")]
+    ListDevices,
 }
 
 fn main() -> Result<()> {
@@ -61,9 +68,17 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
+    if let Some(Command::ListDevices) = args.command {
+        let json = capture::devices::list_devices_json()?;
+        println!("{}", json);
+        return Ok(());
+    }
+
     let loopback_apps: Option<Vec<String>> = args.loopback_apps.map(|s| {
         s.split(',').map(|id| id.trim().to_string()).filter(|id| !id.is_empty()).collect()
     });
+
+    let mic_device = args.mic_device.clone();
 
     info!("Starting audio-capture, pipe={}", args.pipe);
 
@@ -74,7 +89,7 @@ fn main() -> Result<()> {
     std::thread::Builder::new()
         .name("capture-mic".into())
         .spawn(move || {
-            if let Err(e) = capture::mic::run(tx_mic, chunk_ms) {
+            if let Err(e) = capture::mic::run(tx_mic, chunk_ms, mic_device) {
                 tracing::error!("mic capture error: {e:#}");
             }
         })?;

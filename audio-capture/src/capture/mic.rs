@@ -98,7 +98,7 @@ where
 // ── macOS / Linux — cpal (CoreAudio on macOS; ALSA/JACK/PipeWire compat on Linux) ─
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
-pub fn run(tx: Sender<AudioChunk>, _chunk_ms: u32) -> Result<()> {
+pub fn run(tx: Sender<AudioChunk>, _chunk_ms: u32, mic_device: Option<String>) -> Result<()> {
     use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
     use std::sync::{
         atomic::{AtomicBool, Ordering},
@@ -107,9 +107,21 @@ pub fn run(tx: Sender<AudioChunk>, _chunk_ms: u32) -> Result<()> {
     use tracing::info;
 
     let host = cpal::default_host();
-    let device = host
-        .default_input_device()
-        .ok_or_else(|| anyhow::anyhow!("No default input device"))?;
+    let device = match mic_device.as_ref().map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        None => host
+            .default_input_device()
+            .ok_or_else(|| anyhow::anyhow!("No default input device"))?,
+        Some(name) => {
+            let mut found = None;
+            for d in host.input_devices()? {
+                if d.name().map(|n| n == *name).unwrap_or(false) {
+                    found = Some(d);
+                    break;
+                }
+            }
+            found.ok_or_else(|| anyhow::anyhow!("Input device not found: {name}"))?
+        }
+    };
 
     let name = device.name().unwrap_or_else(|_| "unknown".into());
     info!("Mic device: {name}");
@@ -247,14 +259,20 @@ pub fn run(tx: Sender<AudioChunk>, _chunk_ms: u32) -> Result<()> {
 // ── Windows — WASAPI ──────────────────────────────────────────────────────────
 
 #[cfg(windows)]
-pub fn run(tx: Sender<AudioChunk>, _chunk_ms: u32) -> Result<()> {
+pub fn run(tx: Sender<AudioChunk>, _chunk_ms: u32, mic_device: Option<String>) -> Result<()> {
     use std::collections::VecDeque;
     use tracing::{info, warn};
     use wasapi::*;
 
     initialize_mta().ok()?;
 
-    let device = get_default_device(&Direction::Capture)?;
+    let device = match mic_device.as_ref().map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        None => get_default_device(&Direction::Capture)?,
+        Some(name) => {
+            let coll = DeviceCollection::new(&Direction::Capture)?;
+            coll.get_device_with_name(name)?
+        }
+    };
     let device_name = device.get_friendlyname().unwrap_or_else(|_| "unknown".into());
     info!("Mic device: {device_name}");
 
