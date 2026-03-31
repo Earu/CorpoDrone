@@ -421,148 +421,136 @@ pub fn run(tx: Sender<AudioChunk>, _chunk_ms: u32, _target_bundles: Option<Vec<S
     }
 }
 
-// ── Linux — loopback not implemented (mic-only via cpal) ───────────────────────
+// ── Linux — PulseAudio (or PipeWire-pulse) monitor loopback ────────────────────
 //
-// list_apps: best-effort list of processes that look like GUI clients (have
-// DISPLAY or WAYLAND_DISPLAY). Used by `audio-capture list-apps` and matches
-// the macOS JSON shape: (display_name, id). Here `id` is the PID string until
-// per-app loopback exists (no bundle IDs on Linux).
+// Records from the default sink's monitor source (full desktop mix), same idea
+// as Windows WASAPI loopback. Works with PipeWire's libpulse compatibility
+// layer when `pactl` / PulseAudio APIs are available. No per-app list (see
+// list_apps).
 
+/// Monitor source for the default output sink (`pactl get-default-sink` + `.monitor`),
+/// or `get-default-monitor` when available (newer PulseAudio / PipeWire).
 #[cfg(target_os = "linux")]
-fn linux_proc_environ_has_display(environ: &[u8]) -> bool {
-    let mut i = 0usize;
-    while i < environ.len() {
-        let start = i;
-        while i < environ.len() && environ[i] != 0 {
-            i += 1;
+fn linux_pulse_monitor_source_name() -> Result<String> {
+    fn pactl_line(args: &[&str]) -> Option<String> {
+        let out = std::process::Command::new("pactl").args(args).output().ok()?;
+        if !out.status.success() {
+            return None;
         }
-        let entry = &environ[start..i];
-        let is_set = |prefix: &[u8]| {
-            entry.len() > prefix.len() && entry.starts_with(prefix)
-        };
-        if is_set(b"DISPLAY=") || is_set(b"WAYLAND_DISPLAY=") {
-            return true;
+        let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if s.is_empty() {
+            return None;
         }
-        i += 1;
+        Some(s)
     }
-    false
-}
 
-#[cfg(target_os = "linux")]
-fn linux_parse_status(status: &str) -> Option<(u32, String, bool)> {
-    // (effective_uid, Name field, is_zombie)
-    let mut name: Option<String> = None;
-    let mut euid: Option<u32> = None;
-    let mut zombie = false;
-    for line in status.lines() {
-        if let Some(rest) = line.strip_prefix("Name:") {
-            name = Some(rest.trim().to_string());
-        } else if let Some(rest) = line.strip_prefix("Uid:") {
-            let parts: Vec<&str> = rest.split_whitespace().collect();
-            // real, effective, saved, file — use effective (index 1)
-            if parts.len() > 1 {
-                euid = parts[1].parse().ok();
-            }
-        } else if let Some(rest) = line.strip_prefix("State:") {
-            zombie = rest.trim_start().starts_with('Z');
-        }
+    if let Some(m) = pactl_line(&["get-default-monitor"]) {
+        return Ok(m);
     }
-    Some((euid?, name?, zombie))
-}
 
-#[cfg(target_os = "linux")]
-fn linux_display_name_for_pid(pid: u32, comm: &str) -> String {
-    use std::fs;
-    let path = format!("/proc/{pid}/cmdline");
-    let Ok(raw) = fs::read(&path) else {
-        return comm.to_string();
-    };
-    let first: Vec<u8> = raw.split(|&b| b == 0).next().unwrap_or(&[]).to_vec();
-    if first.is_empty() {
-        return comm.to_string();
+    let sink = pactl_line(&["get-default-sink"]).ok_or_else(|| {
+        anyhow::anyhow!(
+            "pactl get-default-sink failed — is PulseAudio or PipeWire (pulseaudio compat) running?"
+        )
+    })?;
+
+    if sink.ends_with(".monitor") {
+        Ok(sink)
+    } else {
+        Ok(format!("{sink}.monitor"))
     }
-    let s = String::from_utf8_lossy(&first);
-    std::path::Path::new(s.as_ref())
-        .file_name()
-        .and_then(|p| p.to_str())
-        .map(|p| p.to_string())
-        .filter(|p| !p.is_empty())
-        .unwrap_or_else(|| comm.to_string())
-}
-
-#[cfg(target_os = "linux")]
-fn linux_skip_comm(comm: &str) -> bool {
-    matches!(
-        comm,
-        "bash" | "sh" | "dash" | "zsh" | "fish" | "tcsh" | "ksh" | "mksh"
-    )
 }
 
 #[cfg(target_os = "linux")]
 pub fn list_apps() -> Vec<(String, String)> {
-    use std::fs;
-    let my_euid = unsafe { libc::geteuid() };
-
-    let mut out: Vec<(String, String)> = Vec::new();
-    let Ok(entries) = fs::read_dir("/proc") else {
-        tracing::warn!("list_apps: cannot read /proc");
-        return out;
-    };
-
-    for entry in entries.flatten() {
-        let fname = entry.file_name();
-        let pid_str = fname.to_string_lossy();
-        if !pid_str.chars().all(|c| c.is_ascii_digit()) {
-            continue;
-        }
-        let Ok(pid) = pid_str.parse::<u32>() else {
-            continue;
-        };
-
-        let status_path = format!("/proc/{pid}/status");
-        let Ok(status) = fs::read_to_string(&status_path) else {
-            continue;
-        };
-        let Some((euid, comm, zombie)) = linux_parse_status(&status) else {
-            continue;
-        };
-        if zombie || euid != my_euid {
-            continue;
-        }
-        if linux_skip_comm(&comm) {
-            continue;
-        }
-
-        let environ_path = format!("/proc/{pid}/environ");
-        let Ok(environ) = fs::read(&environ_path) else {
-            continue;
-        };
-        if !linux_proc_environ_has_display(&environ) {
-            continue;
-        }
-
-        // Skip kernel threads / bare namespaces with no executable mapping.
-        let exe_path = format!("/proc/{pid}/exe");
-        if fs::read_link(&exe_path).is_err() {
-            continue;
-        }
-
-        let label = linux_display_name_for_pid(pid, &comm);
-        out.push((label, pid.to_string()));
-    }
-
-    out.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()).then_with(|| a.1.cmp(&b.1)));
-    out.dedup_by(|a, b| a.1 == b.1);
-    tracing::debug!(count = out.len(), "list_apps (linux GUI-ish processes)");
-    out
+    vec![]
 }
 
 #[cfg(target_os = "linux")]
 pub fn run(
-    _tx: Sender<AudioChunk>,
+    tx: Sender<AudioChunk>,
     _chunk_ms: u32,
     _target_bundles: Option<Vec<String>>,
 ) -> Result<()> {
-    tracing::info!("Loopback capture is not implemented on Linux; microphone capture only");
+    use libpulse_binding::sample::{Format, Spec};
+    use libpulse_binding::stream::Direction;
+    use libpulse_simple_binding::Simple;
+    use tracing::{info, warn};
+
+    use crate::capture::resampler::ToWhisper;
+    use crate::ipc::AudioSource;
+
+    let source = linux_pulse_monitor_source_name()?;
+
+    // Pulse resamples monitor audio to this spec (same pattern as Windows float stereo).
+    const RATE: u32 = 48_000;
+    const CH: u8 = 2;
+    let spec = Spec {
+        format: Format::F32le,
+        channels: CH,
+        rate: RATE,
+    };
+    if !spec.is_valid() {
+        anyhow::bail!("invalid PulseAudio sample spec (F32le {RATE} Hz {CH} ch)");
+    }
+
+    let simple = Simple::new(
+        None,
+        "corpodrone-loopback",
+        Direction::Record,
+        Some(source.as_str()),
+        "desktop-loopback",
+        &spec,
+        None,
+        None,
+    )
+    .map_err(|e| anyhow::anyhow!("PulseAudio: could not open monitor source \"{source}\": {e}"))?;
+
+    info!(
+        "Pulse loopback: source={source} ({} Hz, {CH} ch F32 → 16 kHz mono)",
+        RATE
+    );
+
+    let frame_bytes = spec.frame_size();
+    if frame_bytes == 0 {
+        anyhow::bail!("PulseAudio frame_size is zero");
+    }
+
+    let mut resampler = ToWhisper::new(RATE, u16::from(CH))?;
+    let mut accumulated: Vec<f32> = Vec::new();
+
+    let read_frames = 960usize; // ~20 ms @ 48 kHz
+    let mut buf = vec![0u8; frame_bytes * read_frames];
+
+    loop {
+        if let Err(e) = simple.read(&mut buf) {
+            warn!("Pulse loopback read failed: {e}");
+            break;
+        }
+
+        let interleaved: Vec<f32> = buf
+            .chunks_exact(4)
+            .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+            .collect();
+
+        match resampler.process(&interleaved) {
+            Ok(resampled) => accumulated.extend_from_slice(&resampled),
+            Err(e) => warn!("Loopback resample error: {e}"),
+        }
+
+        while accumulated.len() >= CHUNK_FRAMES {
+            let chunk_data: Vec<f32> = accumulated.drain(..CHUNK_FRAMES).collect();
+            let chunk = AudioChunk {
+                source: AudioSource::Loopback,
+                timestamp_us: current_time_us(),
+                samples: chunk_data,
+            };
+            if tx.send(chunk).is_err() {
+                info!("Loopback: channel closed, stopping");
+                return Ok(());
+            }
+        }
+    }
+
     Ok(())
 }

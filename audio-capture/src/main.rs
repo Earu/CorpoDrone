@@ -27,7 +27,7 @@ struct Args {
     #[arg(long, default_value_t = 100)]
     chunk_ms: u32,
 
-    /// Comma-separated bundle IDs to capture instead of the system mix (macOS only).
+    /// Comma-separated bundle IDs for per-app loopback (macOS only; ignored on Linux/Windows).
     /// Example: com.hnc.Discord,us.zoom.xos
     #[arg(long)]
     loopback_apps: Option<String>,
@@ -35,7 +35,7 @@ struct Args {
 
 #[derive(Subcommand, Debug)]
 enum Command {
-    /// List running GUI applications available for loopback capture (macOS only).
+    /// List running GUI applications for per-app loopback (macOS only; Linux prints []).
     /// Prints a JSON array of {name, bundle_id} objects to stdout, then exits.
     ListApps,
 }
