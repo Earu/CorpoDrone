@@ -923,10 +923,9 @@ function setMuteState(muted) {
   btn.classList.toggle('muted', muted);
 }
 
-// ---- App picker (macOS / Linux loopback-related process selection) ----
+// ---- App picker (macOS only — per-app ScreenCaptureKit loopback sources) ----
 async function startRecording() {
-  // macOS & Linux: show picker when list_loopback_apps returns entries (user must pick ≥1).
-  // Windows: list is empty — start recording immediately.
+  // macOS: picker when list_loopback_apps returns apps. Linux/Windows: full mix, no picker.
   let apps = [];
   try {
     apps = await invoke('list_loopback_apps');

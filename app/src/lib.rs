@@ -169,15 +169,14 @@ fn set_mute(muted: bool) -> serde_json::Value {
     serde_json::json!({ "ok": true, "muted": muted })
 }
 
-/// macOS / Linux: return [{name, bundle_id}] for the loopback source picker.
-/// Runs `audio-capture list-apps` (ScreenCaptureKit on macOS; /proc heuristic on Linux).
-/// Windows returns [] — no picker; system loopback does not use per-process IDs.
+/// macOS only: return [{name, bundle_id}] for the per-app loopback picker (ScreenCaptureKit).
+/// Linux / Windows return [] — loopback is the full desktop mix; no meaningless process selection.
 #[tauri::command]
 async fn list_loopback_apps(state: State<'_, Arc<Config>>) -> Result<serde_json::Value, String> {
-    #[cfg(windows)]
+    #[cfg(not(target_os = "macos"))]
     return Ok(serde_json::json!([]));
 
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[cfg(target_os = "macos")]
     {
         let bin = state.capture_bin.clone();
         let output = tokio::process::Command::new(&bin)
@@ -191,13 +190,6 @@ async fn list_loopback_apps(state: State<'_, Arc<Config>>) -> Result<serde_json:
             .unwrap_or(serde_json::json!([]));
         Ok(apps)
     }
-
-    #[cfg(all(
-        not(windows),
-        not(target_os = "macos"),
-        not(target_os = "linux")
-    ))]
-    return Ok(serde_json::json!([]));
 }
 
 #[tauri::command]
