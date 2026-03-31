@@ -37,6 +37,7 @@ jobs:
           Copy-Item target\release\audio-capture.exe $name\
           Copy-Item config.toml                      $name\
           Copy-Item setup.ps1                        $name\
+          Copy-Item setup.sh                         $name\
           Copy-Item .env.example                     $name\
           Copy-Item -Recurse pipeline                $name\
 
@@ -86,6 +87,7 @@ jobs:
           cp target/release/audio-capture "$NAME/"
           cp config.toml                  "$NAME/"
           cp setup.ps1                    "$NAME/"
+          cp setup.sh "$NAME/"
           cp .env.example                 "$NAME/"
           cp -r pipeline                  "$NAME/"
 
@@ -149,6 +151,7 @@ jobs:
           cp target/release/audio-capture "$NAME/"
           cp config.toml "$NAME/"
           cp setup.ps1 "$NAME/"
+          cp setup.sh "$NAME/"
           cp .env.example "$NAME/"
           cp -r pipeline "$NAME/"
           zip -r "$NAME.zip" "$NAME"
