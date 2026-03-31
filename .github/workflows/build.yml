@@ -58,7 +58,7 @@ jobs:
           generate_release_notes: true
 
   build-macos:
-    runs-on: macos-14  # Apple Silicon (M1/M2)
+    runs-on: macos-latest
 
     steps:
       - uses: actions/checkout@v4
@@ -104,4 +104,66 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: CorpoDrone-macos-arm64.zip
+          generate_release_notes: true
+
+  build-linux:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust nightly
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            pkg-config \
+            libssl-dev \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libasound2-dev \
+            libpulse-dev
+
+      - name: Build audio-capture
+        run: cargo build --release -p audio-capture
+
+      - name: Build Tauri app
+        run: cargo build --release -p corpo-drone
+
+      - name: Package zip
+        run: |
+          NAME="CorpoDrone-linux-x64"
+          mkdir "$NAME"
+          cp target/release/corpo-drone "$NAME/"
+          cp target/release/audio-capture "$NAME/"
+          cp config.toml "$NAME/"
+          cp setup.ps1 "$NAME/"
+          cp .env.example "$NAME/"
+          cp -r pipeline "$NAME/"
+          zip -r "$NAME.zip" "$NAME"
+          echo "Created $NAME.zip"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: CorpoDrone-linux-x64
+          path: CorpoDrone-linux-x64.zip
+          retention-days: 30
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: CorpoDrone-linux-x64.zip
           generate_release_notes: true
