@@ -103,6 +103,41 @@ fn load_config() -> Config {
     cfg
 }
 
+/// Microphone device name from `config.toml` ([python]).
+/// Read at recording start so changes apply without restarting the app.
+fn read_mic_device_from_config() -> String {
+    let mut in_python = false;
+    let mut input = String::new();
+    let Ok(text) = std::fs::read_to_string("config.toml") else {
+        return input;
+    };
+    for raw in text.lines() {
+        let line = raw.trim();
+        if line.starts_with('[') {
+            in_python = line == "[python]";
+            continue;
+        }
+        if !in_python || line.starts_with('#') {
+            continue;
+        }
+        let Some((k, rest)) = line.split_once('=') else {
+            continue;
+        };
+        let k = k.trim();
+        let v = rest
+            .split('#')
+            .next()
+            .unwrap_or("")
+            .trim()
+            .trim_matches('"')
+            .trim_matches('\'');
+        if k == "audio_input_device" {
+            input = v.to_string();
+        }
+    }
+    input
+}
+
 // ---- Log helpers ----
 
 /// Forwards a raw line (already JSON from a subprocess) to a log pane in the UI.
@@ -169,8 +204,26 @@ fn set_mute(muted: bool) -> serde_json::Value {
     serde_json::json!({ "ok": true, "muted": muted })
 }
 
-/// macOS only: return [{name, bundle_id}] for the per-app loopback picker (ScreenCaptureKit).
-/// Linux / Windows return [] — loopback is the full desktop mix; no meaningless process selection.
+/// Enumerate microphones (see `audio-capture list-devices`).
+#[tauri::command]
+async fn list_audio_devices(state: State<'_, Arc<Config>>) -> Result<serde_json::Value, String> {
+    let bin = state.capture_bin.clone();
+    let output = tokio::process::Command::new(&bin)
+        .arg("list-devices")
+        .output()
+        .await
+        .map_err(|e| format!("Failed to run audio-capture list-devices: {e}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "audio-capture list-devices failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    serde_json::from_str(stdout.trim()).map_err(|e| format!("Invalid device list JSON: {e}"))
+}
+
+/// macOS: `[{name, bundle_id}]` for per-app loopback. Other platforms: `[]`.
 #[tauri::command]
 async fn list_loopback_apps(state: State<'_, Arc<Config>>) -> Result<serde_json::Value, String> {
     #[cfg(not(target_os = "macos"))]
@@ -211,6 +264,10 @@ async fn start_recording(
         if !ids.is_empty() {
             cmd.arg("--loopback-apps").arg(ids.join(","));
         }
+    }
+    let mic = read_mic_device_from_config();
+    if !mic.trim().is_empty() {
+        cmd.arg("--mic-device").arg(mic.trim());
     }
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
@@ -289,6 +346,7 @@ fn get_settings() -> serde_json::Value {
         "ollama_host":                 "http://localhost:11434",
         "speaker_enroll":              true,
         "speaker_identify_threshold":  0.58,
+        "audio_input_device":          "",
     });
 
     let text = match std::fs::read_to_string("config.toml") {
@@ -311,7 +369,8 @@ fn get_settings() -> serde_json::Value {
         let v = rest.split('#').next().unwrap_or("").trim().trim_matches('"').trim_matches('\'');
         match k {
             "whisper_model" | "whisper_device" | "whisper_compute_type" |
-            "ollama_model"  | "ollama_host"    | "hf_token" => {
+            "ollama_model"  | "ollama_host"    | "hf_token" |
+            "audio_input_device" => {
                 m.insert(k.to_string(), serde_json::Value::String(v.to_string()));
             }
             "diarize" | "summarize" | "speaker_enroll" => {
@@ -429,6 +488,9 @@ ollama_host = \"{ollama_host}\"
 # Speaker recognition
 speaker_enroll = {speaker_enroll}
 speaker_identify_threshold = {speaker_identify_threshold}
+
+# Microphone (empty = OS default; applies next recording)
+audio_input_device = \"{audio_input_device}\"
 ",
         whisper_model             = str_val!("whisper_model", "small"),
         whisper_device            = str_val!("whisper_device", "auto"),
@@ -444,6 +506,7 @@ speaker_identify_threshold = {speaker_identify_threshold}
         ollama_host               = str_val!("ollama_host", "http://localhost:11434"),
         speaker_enroll            = bool_val!("speaker_enroll", true),
         speaker_identify_threshold = fmt_float(f64_val!("speaker_identify_threshold", 0.58)),
+        audio_input_device        = str_val!("audio_input_device", ""),
     );
 
     let out = if server_block.is_empty() {
@@ -968,6 +1031,7 @@ pub fn run() {
             get_settings,
             save_settings,
             list_loopback_apps,
+            list_audio_devices,
             start_recording,
             stop_recording,
             kill_pipeline,

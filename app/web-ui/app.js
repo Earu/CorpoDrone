@@ -507,6 +507,47 @@ function newSession() {
 
 // ---- Settings ----
 
+function fillAudioDeviceSelect(sel, devices, preferred) {
+  if (!sel) return;
+  const first = document.createElement('option');
+  first.value = '';
+  first.textContent = 'Default (system)';
+  sel.innerHTML = '';
+  sel.appendChild(first);
+  for (const d of devices || []) {
+    const id = d.id || d.name;
+    if (!id) continue;
+    const opt = document.createElement('option');
+    opt.value = id;
+    opt.textContent = d.name || id;
+    sel.appendChild(opt);
+  }
+  if (preferred && [...sel.options].some(o => o.value === preferred)) {
+    sel.value = preferred;
+  } else {
+    sel.value = '';
+  }
+}
+
+/** Repopulate mic dropdown. Pass preserved value after `get_settings` so Save doesn’t reset the pick. */
+async function refreshAudioDevices(preserveIn) {
+  const inSel = document.getElementById('s-audio_input_device');
+  const hint = document.getElementById('audio-device-platform-hint');
+  let data;
+  try {
+    data = await invoke('list_audio_devices');
+  } catch (e) {
+    console.warn('list_audio_devices failed', e);
+    if (hint) {
+      hint.textContent = 'Could not list devices — ensure audio-capture is built and next to the app.';
+    }
+    return;
+  }
+  const pi = preserveIn !== undefined ? preserveIn : (inSel?.value ?? '');
+  fillAudioDeviceSelect(inSel, data.inputs, pi);
+  if (hint) hint.textContent = '';
+}
+
 async function openSettings() {
   const s = await invoke('get_settings');
 
@@ -532,6 +573,9 @@ async function openSettings() {
   set('summarize',                  s.summarize);
   set('ollama_model',               s.ollama_model);
   set('ollama_host',                s.ollama_host);
+
+  const savedIn = s.audio_input_device || '';
+  await refreshAudioDevices(savedIn);
 
   // Sync dependent row visibility
   _syncSettingsDependents('diarize');
@@ -590,6 +634,7 @@ async function saveSettings() {
     summarize:                   get('summarize'),
     ollama_model:                get('ollama_model'),
     ollama_host:                 get('ollama_host'),
+    audio_input_device:          get('audio_input_device'),
   };
 
   try {
