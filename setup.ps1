@@ -61,18 +61,21 @@ if ($CorpoOS -eq "windows") {
 # ── [2/3] Install dependencies ───────────────────────────────────────────────
 Write-Host "`n[2/3] Installing dependencies (this may take a while)..." -ForegroundColor Yellow
 
+# torchaudio>=2.9 removed torchaudio.AudioMetaData; pyannote.audio (via whisperx) still needs it.
+$TorchPin = @("torch>=2.5.0,<2.9.0", "torchaudio>=2.5.0,<2.9.0")
+
 if ($CorpoOS -eq "windows") {
     Write-Host "  Installing PyTorch with CUDA 12.1 support..." -ForegroundColor Gray
-    & $pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu121
+    & $pip install @TorchPin --index-url https://download.pytorch.org/whl/cu121
     if ($LASTEXITCODE -ne 0) { Write-Host "PyTorch install failed" -ForegroundColor Red; exit 1 }
 } elseif ($CorpoOS -eq "linux") {
     Write-Host "  Installing PyTorch (CPU wheels from PyPI)..." -ForegroundColor Gray
-    & $pip install torch torchaudio
+    & $pip install @TorchPin
     if ($LASTEXITCODE -ne 0) { Write-Host "PyTorch install failed" -ForegroundColor Red; exit 1 }
 } else {
     # macOS
     Write-Host "  Installing PyTorch (CPU/MPS for macOS)..." -ForegroundColor Gray
-    & $pip install torch torchaudio
+    & $pip install @TorchPin
     if ($LASTEXITCODE -ne 0) { Write-Host "PyTorch install failed" -ForegroundColor Red; exit 1 }
     Write-Host "  Installing mlx-whisper (Apple Silicon transcription)..." -ForegroundColor Gray
     & $pip install mlx-whisper
@@ -84,9 +87,12 @@ $reqFile = if ($CorpoOS -eq "windows") { "pipeline\requirements.txt" } else { "p
 & $pip install -r $reqFile
 if ($LASTEXITCODE -ne 0) { Write-Host "Dependency install failed" -ForegroundColor Red; exit 1 }
 
-# Re-pin the correct torch build in case requirements.txt overrode it
+# Re-pin torch in case pipeline deps pulled a newer (incompatible) build
 if ($CorpoOS -eq "windows") {
-    & $pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu121 --force-reinstall --no-deps
+    & $pip install @TorchPin --index-url https://download.pytorch.org/whl/cu121 --force-reinstall --no-deps
+    if ($LASTEXITCODE -ne 0) { Write-Host "PyTorch re-pin failed" -ForegroundColor Red; exit 1 }
+} else {
+    & $pip install @TorchPin --force-reinstall --no-deps
     if ($LASTEXITCODE -ne 0) { Write-Host "PyTorch re-pin failed" -ForegroundColor Red; exit 1 }
 }
 

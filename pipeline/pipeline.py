@@ -16,6 +16,8 @@ Flow:
     → re-transcribe / summarize → send final_summary
     → reset per-session state → wait for next session
 """
+import huggingface_hub_compat  # noqa: F401 — patch hub 0.x before torch/transcriber (is_offline_mode)
+
 import json
 import os
 import sys

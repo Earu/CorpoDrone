@@ -45,20 +45,34 @@ Capture audio from your microphone and speakers simultaneously, transcribe with 
 
 - **Screen Recording permission** granted to your terminal app (for loopback capture via ScreenCaptureKit)
 - **Microphone permission** granted to your terminal app
-- [PowerShell](https://github.com/PowerShell/PowerShell) (`brew install --cask powershell`) to run `setup.ps1`
+- **`./setup.sh`** in Bash, or [PowerShell](https://github.com/PowerShell/PowerShell) (`brew install --cask powershell`) for `pwsh ./setup.ps1`
 
 ### Linux additional requirements
 
-**To build the Tauri app** (same families [Tauri documents](https://tauri.app/start/prerequisites/) for Linux), for example on Debian/Ubuntu:
+The Tauri UI depends on the usual **WebKitGTK + GTK 3** stack ([Tauri Linux prerequisites](https://tauri.app/start/prerequisites/)). Full desktop installations typically include those libraries; **minimal or server images** and **containers** often do not, which surfaces as missing shared libraries when building or running prebuilt binaries.
+
+#### Building from source
+
+Debian/Ubuntu-style packages:
 
 - `libwebkit2gtk-4.1-dev`, `libgtk-3-dev`, `libayatana-appindicator3-dev`, `librsvg2-dev`, `patchelf`, `libssl-dev`, `pkg-config`, `build-essential`
 
-**For `audio-capture`**:
+**`audio-capture`**:
 
 - **`libasound2-dev`** (ALSA) — mic capture via cpal  
-- **`libpulse-dev`** — loopback via `libpulse-simple` (works with **PipeWire** when the pulse compatibility service and `pactl` are available)
+- **`libpulse-dev`** — loopback via `libpulse-simple` (PipeWire works when the PulseAudio compatibility layer and `pactl` are available)
 
-**Python pipeline**: system **libsndfile** (e.g. `libsndfile1`) for `soundfile`, and **ffmpeg** on `PATH` if your Whisper stack expects it.
+**Python pipeline**: system **libsndfile** (e.g. `libsndfile1`) for `soundfile`, and **ffmpeg** on `PATH` where the Whisper stack requires it.
+
+#### Runtime libraries (prebuilt binaries)
+
+Install **WebKitGTK** for the Tauri webview (GTK/Cairo/GLib and related libs are pulled in as dependencies). **PulseAudio** and **ALSA** client libraries are listed explicitly for **audio-capture**.
+
+- **Debian / Ubuntu**: `sudo apt install libwebkit2gtk-4.1-0 libpulse0 libasound2`
+- **Fedora**: `sudo dnf install webkitgtk4.1 pulseaudio-libs alsa-lib`
+- **Arch Linux**: `sudo pacman -S webkitgtk-4.1 libpulse alsa-lib`
+
+Package names vary by release; adjust as needed.
 
 ## Setup
 
@@ -82,9 +96,17 @@ Edit `config.toml` to adjust the Whisper model size, speaker limits, Ollama mode
 
 ### 3. Python environment (required)
 
-Install the Python stack with **`setup.ps1`**. It creates `.venv`, installs **PyTorch** / **torchaudio** (CUDA on Windows, CPU on Linux, CPU/MPS on macOS), **mlx-whisper** on macOS, then `pipeline/requirements.txt`, and can prompt for your HuggingFace token.
+Install the Python stack with **`setup.ps1`** or **`setup.sh`**. Both create `.venv`, install **PyTorch** / **torchaudio** (CUDA on Windows, CPU on Linux, CPU/MPS on macOS), **mlx-whisper** on macOS, then `pipeline/requirements.txt`, and can prompt for your HuggingFace token.
 
-Use [PowerShell 7+](https://github.com/PowerShell/PowerShell) (`pwsh`) on every OS — on macOS/Linux, install it from your package manager or the PowerShell releases page, then from the repo root:
+From the repo root:
+
+**macOS / Linux** (Bash — includes Git Bash on Windows):
+
+```bash
+./setup.sh
+```
+
+**Windows**, or any OS with [PowerShell 7+](https://github.com/PowerShell/PowerShell) (`pwsh`):
 
 ```powershell
 pwsh ./setup.ps1
