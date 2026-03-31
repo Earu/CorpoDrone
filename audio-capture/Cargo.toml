@@ -26,9 +26,11 @@ windows = { version = "0.59", features = [
     "Win32_Security",
 ] }
 
+[target.'cfg(any(target_os = "macos", target_os = "linux"))'.dependencies]
+cpal = "0.15"
+
 [target.'cfg(target_os = "macos")'.dependencies]
 screencapturekit = { version = "1", features = ["macos_26_0"] }
-cpal = "0.15"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
