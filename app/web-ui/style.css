@@ -1246,6 +1246,21 @@ button.btn-ghost:hover { color: var(--text); border-color: var(--text-muted); }
 #ollama-modal .modal-body  { padding: 24px 32px 16px; }
 #ollama-modal .modal-footer { padding: 16px 32px 24px; }
 
+#file-import-error-modal .modal-title { color: var(--danger); }
+#file-import-error-modal .modal-body  { padding: 20px 32px 12px; }
+#file-import-error-modal .modal-footer { padding: 16px 32px 24px; }
+.file-import-error-pre {
+  font-family: var(--mono);
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: min(40vh, 280px);
+  overflow: auto;
+  color: var(--text-sub);
+  line-height: 1.45;
+  margin: 0;
+}
+
 .btn-inline-link {
   background: none;
   border: none;
