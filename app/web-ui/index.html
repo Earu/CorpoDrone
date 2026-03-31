@@ -278,15 +278,15 @@
       </div>
       <div id="debrief-tab-panel" class="debrief-tab-panel">
         <div id="debrief-choice" class="hidden">
-          <p class="debrief-choice-desc">Session complete. Choose transcript source:</p>
+          <p class="debrief-choice-desc">Session complete. How would you like to build your debrief?</p>
           <div class="debrief-choice-btns">
-            <div class="debrief-choice-opt" onclick="choosePipelineMode('live')">
-              <div class="debrief-choice-title">USE LIVE TRANSCRIPT</div>
-              <div class="debrief-choice-sub">Immediate — uses the streaming transcript</div>
+            <div class="debrief-choice-opt" onclick="choosePipelineMode('live')" title="Uses the transcript from the live session — no extra processing.">
+              <div class="debrief-choice-title">Fastest</div>
+              <div class="debrief-choice-sub">Use the live transcript — ready right away.</div>
             </div>
-            <div class="debrief-choice-opt debrief-choice-opt-primary" onclick="choosePipelineMode('retranscribe')">
-              <div class="debrief-choice-title">RE-TRANSCRIBE ↑</div>
-              <div class="debrief-choice-sub">Better accuracy — reprocesses full audio</div>
+            <div class="debrief-choice-opt debrief-choice-opt-primary" onclick="choosePipelineMode('retranscribe')" title="Runs speech recognition again on the full recording. Slower, often more accurate.">
+              <div class="debrief-choice-title">Best accuracy</div>
+              <div class="debrief-choice-sub">Listen to the full recording again — takes longer, usually clearer.</div>
             </div>
           </div>
         </div>

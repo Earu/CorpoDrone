@@ -743,16 +743,18 @@ button.btn-ghost:hover { color: var(--text); border-color: var(--text-muted); }
 
 .debrief-choice-btns {
   display: flex;
+  flex-wrap: wrap;
   gap: 16px;
 }
 
 .debrief-choice-opt {
   flex: 1;
+  min-width: min(100%, 240px);
   padding: 20px 24px;
   border: 1px solid var(--border-hi);
   background: var(--surface);
   cursor: pointer;
-  transition: border-color 0.12s, background 0.12s;
+  transition: border-color 0.12s, background 0.12s, box-shadow 0.12s;
 }
 
 .debrief-choice-opt:hover {
@@ -765,19 +767,24 @@ button.btn-ghost:hover { color: var(--text); border-color: var(--text-muted); }
   background: var(--accent-dim);
 }
 
+/* Sharp edge highlight — avoid a soft “blur” glow on hover */
 .debrief-choice-opt-primary:hover {
-  background: rgba(200, 255, 0, 0.14);
-  box-shadow: var(--accent-glow);
+  background: rgba(200, 255, 0, 0.11);
+  border-color: var(--accent);
+  box-shadow:
+    0 0 0 1px var(--accent),
+    0 4px 20px rgba(200, 255, 0, 0.08);
 }
 
 .debrief-choice-title {
   font-family: var(--font);
-  font-size: 16px;
+  font-size: 17px;
   font-weight: 700;
-  letter-spacing: 0.12em;
+  letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--text);
-  margin-bottom: 6px;
+  margin-bottom: 8px;
+  line-height: 1.2;
 }
 
 .debrief-choice-opt-primary .debrief-choice-title {
@@ -785,10 +792,12 @@ button.btn-ghost:hover { color: var(--text); border-color: var(--text-muted); }
 }
 
 .debrief-choice-sub {
-  font-family: var(--mono);
-  font-size: 11px;
-  color: var(--text-muted);
-  letter-spacing: 0.05em;
+  font-family: var(--font);
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.45;
+  color: var(--text-sub);
+  letter-spacing: 0.02em;
 }
 
 /* ── Debrief progress bar ────────────────────────────────────────── */
