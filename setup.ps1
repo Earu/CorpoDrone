@@ -4,6 +4,19 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
+# OS flags via .NET (do not use $IsLinux / $IsWindows — missing or wrong under Windows PowerShell 5.1)
+$OSPlatform = [System.Runtime.InteropServices.OSPlatform]
+$Ri = [System.Runtime.InteropServices.RuntimeInformation]
+if ($Ri::IsOSPlatform($OSPlatform::Windows)) {
+    $CorpoOS = "windows"
+} elseif ($Ri::IsOSPlatform($OSPlatform::Linux)) {
+    $CorpoOS = "linux"
+} elseif ($Ri::IsOSPlatform($OSPlatform::OSX)) {
+    $CorpoOS = "macos"
+} else {
+    $CorpoOS = "linux" # other Unix: CPU torch, no mlx-whisper
+}
+
 Write-Host "=== CorpoDrone Setup ===" -ForegroundColor Cyan
 
 # ── Find Python 3.11 or 3.12 ────────────────────────────────────────────────
@@ -37,7 +50,7 @@ if (Test-Path ".venv") {
     if ($LASTEXITCODE -ne 0) { Write-Host "venv creation failed" -ForegroundColor Red; exit 1 }
 }
 
-if ($IsWindows) {
+if ($CorpoOS -eq "windows") {
     $pip    = ".\.venv\Scripts\pip.exe"
     $python = ".\.venv\Scripts\python.exe"
 } else {
@@ -48,12 +61,17 @@ if ($IsWindows) {
 # ── [2/3] Install dependencies ───────────────────────────────────────────────
 Write-Host "`n[2/3] Installing dependencies (this may take a while)..." -ForegroundColor Yellow
 
-if ($IsWindows) {
+if ($CorpoOS -eq "windows") {
     Write-Host "  Installing PyTorch with CUDA 12.1 support..." -ForegroundColor Gray
     & $pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu121
     if ($LASTEXITCODE -ne 0) { Write-Host "PyTorch install failed" -ForegroundColor Red; exit 1 }
+} elseif ($CorpoOS -eq "linux") {
+    Write-Host "  Installing PyTorch (CPU wheels from PyPI)..." -ForegroundColor Gray
+    & $pip install torch torchaudio
+    if ($LASTEXITCODE -ne 0) { Write-Host "PyTorch install failed" -ForegroundColor Red; exit 1 }
 } else {
-    Write-Host "  Installing PyTorch (CPU/MPS build for macOS)..." -ForegroundColor Gray
+    # macOS
+    Write-Host "  Installing PyTorch (CPU/MPS for macOS)..." -ForegroundColor Gray
     & $pip install torch torchaudio
     if ($LASTEXITCODE -ne 0) { Write-Host "PyTorch install failed" -ForegroundColor Red; exit 1 }
     Write-Host "  Installing mlx-whisper (Apple Silicon transcription)..." -ForegroundColor Gray
@@ -62,12 +80,12 @@ if ($IsWindows) {
 }
 
 Write-Host "  Installing pipeline dependencies..." -ForegroundColor Gray
-$reqFile = if ($IsWindows) { "pipeline\requirements.txt" } else { "pipeline/requirements.txt" }
+$reqFile = if ($CorpoOS -eq "windows") { "pipeline\requirements.txt" } else { "pipeline/requirements.txt" }
 & $pip install -r $reqFile
 if ($LASTEXITCODE -ne 0) { Write-Host "Dependency install failed" -ForegroundColor Red; exit 1 }
 
 # Re-pin the correct torch build in case requirements.txt overrode it
-if ($IsWindows) {
+if ($CorpoOS -eq "windows") {
     & $pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu121 --force-reinstall --no-deps
     if ($LASTEXITCODE -ne 0) { Write-Host "PyTorch re-pin failed" -ForegroundColor Red; exit 1 }
 }
@@ -118,7 +136,11 @@ if (-not $tokenSet) {
 Write-Host "`n=== Setup complete ===" -ForegroundColor Green
 Write-Host ""
 Write-Host "Launch CorpoDrone:" -ForegroundColor Cyan
-Write-Host "  Double-click corpo-drone.exe" -ForegroundColor White
-Write-Host "  (or: .\corpo-drone.exe)" -ForegroundColor Gray
+if ($CorpoOS -eq "windows") {
+    Write-Host "  Double-click corpo-drone.exe" -ForegroundColor White
+    Write-Host "  (or: .\corpo-drone.exe)" -ForegroundColor Gray
+} else {
+    Write-Host "  From repo root: cargo tauri dev  (or run the packaged binary if you built a release)" -ForegroundColor White
+}
 Write-Host ""
 Write-Host "On first run, PyAnnote models will be downloaded automatically (~1 GB)." -ForegroundColor Gray

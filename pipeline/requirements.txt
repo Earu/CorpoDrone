@@ -1,5 +1,5 @@
 # !! Requires Python 3.11 or 3.12. Python 3.13 is NOT supported by WhisperX/PyAnnote yet.
-# Install PyTorch FIRST from https://pytorch.org/get-started/locally/ (CUDA or CPU)
+# torch / torchaudio: installed by ../setup.ps1 before this file (platform-specific wheels).
 # torch>=2.2.0
 # torchaudio>=2.2.0
 
