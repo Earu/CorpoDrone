@@ -706,7 +706,13 @@ fn rename_speaker(person_id: String, name: String) -> serde_json::Value {
 async fn pick_audio_file() -> Result<Option<String>, String> {
     let path = tokio::task::spawn_blocking(|| {
         rfd::FileDialog::new()
-            .add_filter("Audio", &["wav", "mp3", "m4a", "flac", "ogg", "aac", "wma", "opus", "mp4"])
+            .add_filter(
+                "Audio / video",
+                &[
+                    "wav", "mp3", "m4a", "flac", "ogg", "aac", "wma", "opus", "mp4", "m4v", "mov",
+                    "mkv", "webm", "avi", "wmv", "flv",
+                ],
+            )
             .add_filter("All files", &["*"])
             .pick_file()
             .map(|p| p.to_string_lossy().into_owned())

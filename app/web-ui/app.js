@@ -36,6 +36,9 @@ function handleMessage(msg) {
     case 'final_summary':
       if (!_ignoredProcessing && currentPage() === 'debrief') showDebrief(msg);
       break;
+    case 'file_import_error':
+      if (!_ignoredProcessing) showFileImportError(msg.error || 'Unknown error');
+      break;
     case 'speaker_update':
       updateSpeakerName(msg.speaker_id, msg.name);
       break;
@@ -348,6 +351,31 @@ function skipOllama() {
 
 function closeOllamaModal() {
   document.getElementById('ollama-modal').classList.add('hidden');
+}
+
+function showFileImportError(message) {
+  _clearOllamaTimers();
+  closeOllamaModal();
+  _pendingFileImportPath = null;
+  _debriefModeChosen = false;
+  _sessionEnded = false;
+  _summaryText = '';
+  _transcriptSegs = [];
+  const txBody = document.getElementById('transcript-tab-body');
+  if (txBody) txBody.innerHTML = '';
+  document.getElementById('debrief-choice').classList.add('hidden');
+  document.getElementById('debrief-progress').classList.add('hidden');
+  document.getElementById('debrief-body').innerHTML = '';
+  setOverallProgress(0, '');
+  document.getElementById('btn-copy').style.display = 'none';
+  const errEl = document.getElementById('file-import-error-text');
+  if (errEl) errEl.textContent = message;
+  document.getElementById('file-import-error-modal').classList.remove('hidden');
+  showPage('landing');
+}
+
+function closeFileImportErrorModal() {
+  document.getElementById('file-import-error-modal').classList.add('hidden');
 }
 
 function _clearOllamaTimers() {

@@ -20,7 +20,9 @@ import huggingface_hub_compat  # noqa: F401 — patch hub 0.x before torch/trans
 
 import json
 import os
+import subprocess
 import sys
+import tempfile
 import queue
 import threading
 import uuid
@@ -58,6 +60,49 @@ SAMPLE_RATE = 16_000
 # Whisper can produce timestamp regressions (looping back to t≈0) on very long
 # audio; chunking avoids this. 10 minutes is well within Whisper's reliable range.
 RETRANSCRIBE_CHUNK_S = 600
+
+
+def _load_audio_via_ffmpeg(path: str) -> np.ndarray:
+    """Decode to mono float32 at SAMPLE_RATE using ffmpeg (video containers, odd codecs)."""
+    import soundfile as sf
+
+    fd, out_path = tempfile.mkstemp(suffix=".wav")
+    os.close(fd)
+    try:
+        cmd = [
+            "ffmpeg",
+            "-nostdin",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-i",
+            path,
+            "-ar",
+            str(SAMPLE_RATE),
+            "-ac",
+            "1",
+            "-c:a",
+            "pcm_f32le",
+            out_path,
+        ]
+        try:
+            proc = subprocess.run(cmd, capture_output=True, check=False)
+        except FileNotFoundError as e:
+            raise RuntimeError(
+                "ffmpeg is required to decode this file. Install ffmpeg and ensure it is on your PATH."
+            ) from e
+        if proc.returncode != 0:
+            err = proc.stderr.decode("utf-8", errors="replace").strip()
+            raise RuntimeError(err or f"ffmpeg exited with code {proc.returncode}")
+        audio, _sr = sf.read(out_path, dtype="float32", always_2d=True)
+        audio = audio.mean(axis=1)
+        return audio.astype(np.float32)
+    finally:
+        try:
+            os.unlink(out_path)
+        except OSError:
+            pass
 
 
 class AudioStream:
@@ -916,12 +961,17 @@ class Pipeline:
             audio, sr = sf.read(path, dtype="float32", always_2d=True)
             audio = audio.mean(axis=1)  # stereo → mono
         except Exception:
-            # soundfile can't handle mp3/m4a — fall back to torchaudio
-            import torchaudio  # type: ignore
-            waveform, sr = torchaudio.load(path)
-            if waveform.shape[0] > 1:
-                waveform = waveform.mean(dim=0)
-            audio = waveform.numpy()
+            try:
+                # soundfile can't handle mp3/m4a — fall back to torchaudio
+                import torchaudio  # type: ignore
+
+                waveform, sr = torchaudio.load(path)
+                if waveform.shape[0] > 1:
+                    waveform = waveform.mean(dim=0)
+                audio = waveform.numpy()
+            except Exception as e:
+                log.info("file_load_fallback_ffmpeg", path=path, prior_error=str(e))
+                return _load_audio_via_ffmpeg(path)
 
         if sr != SAMPLE_RATE:
             import torch
@@ -945,7 +995,7 @@ class Pipeline:
             audio = self._load_audio_file(path)
         except Exception as e:
             log.error("file_import_load_failed", error=str(e))
-            self.writer.send({"type": "final_summary", "text": "", "transcript": []})
+            self.writer.send({"type": "file_import_error", "error": str(e)})
             return
 
         log.info("file_import_loaded", seconds=round(len(audio) / SAMPLE_RATE))
@@ -959,7 +1009,7 @@ class Pipeline:
             segs = self._transcribe_chunked(audio, transcribe_cb)
         except Exception as e:
             log.error("file_import_transcribe_failed", error=str(e))
-            self.writer.send({"type": "final_summary", "text": "", "transcript": []})
+            self.writer.send({"type": "file_import_error", "error": str(e)})
             return
 
         if torch.cuda.is_available():

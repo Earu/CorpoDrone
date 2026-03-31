@@ -18,7 +18,7 @@
       <p id="landing-sub">// AUDIO INTELLIGENCE SYSTEM</p>
       <div class="landing-start-row">
         <button id="btn-start" onclick="startRecording()" disabled>LOADING...</button>
-        <button id="btn-import" class="btn-import-audio" onclick="importAudioFile()" disabled title="Import audio file">
+        <button id="btn-import" class="btn-import-audio" onclick="importAudioFile()" disabled title="Import audio or video file (video requires ffmpeg on PATH)">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
             <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
             <polyline points="17 8 12 3 7 8"/>
@@ -381,6 +381,22 @@
       <div class="modal-footer">
         <button class="btn-ghost" onclick="cancelAppPicker()">Cancel</button>
         <button class="btn-modal-primary" id="app-picker-confirm" onclick="confirmAppPicker()" disabled>Start Recording</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── File import error ─────────────────────────────────────────── -->
+  <div id="file-import-error-modal" class="modal-overlay hidden">
+    <div class="modal">
+      <div class="modal-header">
+        <div class="modal-title">COULD NOT LOAD FILE</div>
+        <div class="modal-sub">Import failed — fix the issue and try again</div>
+      </div>
+      <div class="modal-body">
+        <pre id="file-import-error-text" class="file-import-error-pre"></pre>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn-modal-primary" onclick="closeFileImportErrorModal()">OK</button>
       </div>
     </div>
   </div>
