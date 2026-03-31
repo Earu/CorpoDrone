@@ -14,16 +14,97 @@ fn current_time_us() -> u64 {
         .as_micros() as u64
 }
 
-// ── macOS — CoreAudio via cpal ────────────────────────────────────────────────
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn mic_process_cpal_interleaved_f32(
+    resampler: &mut ToWhisper,
+    accumulated: &mut Vec<f32>,
+    tx: &Sender<AudioChunk>,
+    stopped_cb: &std::sync::Arc<std::sync::atomic::AtomicBool>,
+    first_callback: &std::sync::Arc<std::sync::atomic::AtomicBool>,
+    interleaved: &[f32],
+) {
+    use std::sync::atomic::Ordering;
+    use tracing::warn;
 
-#[cfg(target_os = "macos")]
+    if !first_callback.swap(true, Ordering::Relaxed) {
+        tracing::info!(
+            "Mic: first audio callback ({} samples, non-zero={})",
+            interleaved.len(),
+            interleaved.iter().any(|&s| s != 0.0)
+        );
+    }
+    match resampler.process(interleaved) {
+        Ok(resampled) => {
+            accumulated.extend_from_slice(&resampled);
+            while accumulated.len() >= CHUNK_FRAMES {
+                let samples: Vec<f32> = accumulated.drain(..CHUNK_FRAMES).collect();
+                let chunk = AudioChunk {
+                    source: AudioSource::Mic,
+                    timestamp_us: current_time_us(),
+                    samples,
+                };
+                if tx.send(chunk).is_err() {
+                    stopped_cb.store(true, Ordering::Relaxed);
+                    return;
+                }
+            }
+        }
+        Err(e) => warn!("Mic resample error: {e}"),
+    }
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn mic_cpal_stream_error(err: cpal::StreamError) {
+    tracing::error!("Mic stream error: {err}");
+}
+
+/// Input stream that converts `T` samples to `f32` via cpal/dasp before resampling.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn build_cpal_mic_input_converting<T>(
+    device: &cpal::Device,
+    stream_cfg: &cpal::StreamConfig,
+    mut resampler: ToWhisper,
+    mut accumulated: Vec<f32>,
+    tx: Sender<AudioChunk>,
+    stopped_cb: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    first_cb2: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) -> Result<cpal::Stream, cpal::BuildStreamError>
+where
+    T: cpal::SizedSample,
+    f32: cpal::FromSample<T>,
+{
+    use cpal::traits::DeviceTrait;
+
+    let mut scratch = Vec::<f32>::with_capacity(8192);
+    device.build_input_stream(
+        stream_cfg,
+        move |data: &[T], _: &cpal::InputCallbackInfo| {
+            scratch.clear();
+            scratch.extend(data.iter().map(|&s| s.to_sample::<f32>()));
+            mic_process_cpal_interleaved_f32(
+                &mut resampler,
+                &mut accumulated,
+                &tx,
+                &stopped_cb,
+                &first_cb2,
+                &scratch,
+            );
+        },
+        mic_cpal_stream_error,
+        None,
+    )
+}
+
+// ── macOS / Linux — cpal (CoreAudio on macOS; ALSA/JACK/PipeWire compat on Linux) ─
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 pub fn run(tx: Sender<AudioChunk>, _chunk_ms: u32) -> Result<()> {
     use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
     use std::sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
     };
-    use tracing::{info, warn};
+    use tracing::info;
 
     let host = cpal::default_host();
     let device = host
@@ -39,9 +120,7 @@ pub fn run(tx: Sender<AudioChunk>, _chunk_ms: u32) -> Result<()> {
     let sample_format = config.sample_format();
     info!("Mic format: {sample_rate}Hz {channels}ch {sample_format:?}");
 
-    if sample_format != cpal::SampleFormat::F32 {
-        anyhow::bail!("Mic: expected F32 audio from CoreAudio, got {sample_format:?}");
-    }
+    let stream_cfg: cpal::StreamConfig = config.clone().into();
 
     let mut resampler = ToWhisper::new(sample_rate, channels)?;
     let mut accumulated: Vec<f32> = Vec::new();
@@ -50,36 +129,111 @@ pub fn run(tx: Sender<AudioChunk>, _chunk_ms: u32) -> Result<()> {
     let first_cb = Arc::new(AtomicBool::new(false));
     let first_cb2 = first_cb.clone();
 
-    let stream = device.build_input_stream(
-        &config.into(),
-        move |data: &[f32], _: &cpal::InputCallbackInfo| {
-            if !first_cb2.swap(true, Ordering::Relaxed) {
-                tracing::info!("Mic: first audio callback ({} frames, non-zero={})",
-                    data.len(),
-                    data.iter().any(|&s| s != 0.0));
-            }
-            match resampler.process(data) {
-                Ok(resampled) => {
-                    accumulated.extend_from_slice(&resampled);
-                    while accumulated.len() >= CHUNK_FRAMES {
-                        let samples: Vec<f32> = accumulated.drain(..CHUNK_FRAMES).collect();
-                        let chunk = AudioChunk {
-                            source: AudioSource::Mic,
-                            timestamp_us: current_time_us(),
-                            samples,
-                        };
-                        if tx.send(chunk).is_err() {
-                            stopped_cb.store(true, Ordering::Relaxed);
-                            return;
-                        }
-                    }
-                }
-                Err(e) => warn!("Mic resample error: {e}"),
-            }
-        },
-        move |err| tracing::error!("Mic stream error: {err}"),
-        None,
-    )?;
+    let stream_result = match sample_format {
+        cpal::SampleFormat::F32 => device.build_input_stream(
+            &stream_cfg,
+            move |data: &[f32], _: &cpal::InputCallbackInfo| {
+                mic_process_cpal_interleaved_f32(
+                    &mut resampler,
+                    &mut accumulated,
+                    &tx,
+                    &stopped_cb,
+                    &first_cb2,
+                    data,
+                );
+            },
+            mic_cpal_stream_error,
+            None,
+        ),
+        cpal::SampleFormat::I8 => build_cpal_mic_input_converting::<i8>(
+            &device,
+            &stream_cfg,
+            resampler,
+            accumulated,
+            tx,
+            stopped_cb,
+            first_cb2,
+        ),
+        cpal::SampleFormat::I16 => build_cpal_mic_input_converting::<i16>(
+            &device,
+            &stream_cfg,
+            resampler,
+            accumulated,
+            tx,
+            stopped_cb,
+            first_cb2,
+        ),
+        cpal::SampleFormat::I32 => build_cpal_mic_input_converting::<i32>(
+            &device,
+            &stream_cfg,
+            resampler,
+            accumulated,
+            tx,
+            stopped_cb,
+            first_cb2,
+        ),
+        cpal::SampleFormat::I64 => build_cpal_mic_input_converting::<i64>(
+            &device,
+            &stream_cfg,
+            resampler,
+            accumulated,
+            tx,
+            stopped_cb,
+            first_cb2,
+        ),
+        cpal::SampleFormat::U8 => build_cpal_mic_input_converting::<u8>(
+            &device,
+            &stream_cfg,
+            resampler,
+            accumulated,
+            tx,
+            stopped_cb,
+            first_cb2,
+        ),
+        cpal::SampleFormat::U16 => build_cpal_mic_input_converting::<u16>(
+            &device,
+            &stream_cfg,
+            resampler,
+            accumulated,
+            tx,
+            stopped_cb,
+            first_cb2,
+        ),
+        cpal::SampleFormat::U32 => build_cpal_mic_input_converting::<u32>(
+            &device,
+            &stream_cfg,
+            resampler,
+            accumulated,
+            tx,
+            stopped_cb,
+            first_cb2,
+        ),
+        cpal::SampleFormat::U64 => build_cpal_mic_input_converting::<u64>(
+            &device,
+            &stream_cfg,
+            resampler,
+            accumulated,
+            tx,
+            stopped_cb,
+            first_cb2,
+        ),
+        cpal::SampleFormat::F64 => build_cpal_mic_input_converting::<f64>(
+            &device,
+            &stream_cfg,
+            resampler,
+            accumulated,
+            tx,
+            stopped_cb,
+            first_cb2,
+        ),
+        f => {
+            return Err(anyhow::anyhow!(
+                "Mic: unsupported sample format {f:?} (cpal added a new format)"
+            ));
+        }
+    };
+
+    let stream = stream_result.map_err(|e| anyhow::anyhow!("Mic: failed to open input stream: {e}"))?;
 
     stream.play()?;
     info!("Mic capture started");
