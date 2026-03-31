@@ -2,6 +2,9 @@
 
 Capture audio from your microphone and speakers simultaneously, transcribe with Whisper, identify who's talking with speaker diarization, and summarize the full session with a local LLM, all displayed in a desktop UI.
 
+>### Legal Notice
+>CorpoDrone captures and processes audio on your machine. **You alone** are responsible for how you use it: local laws, consent, notice, workplace rules, and data-protection requirements are on you. The authors and contributors **disclaim liability** for any use or misuse. This is **not legal advice**; if in doubt, don’t run it or ask a lawyer.
+
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
