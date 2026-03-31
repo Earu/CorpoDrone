@@ -333,6 +333,11 @@ function retryOllama() {
 function skipOllama() {
   _clearOllamaTimers();
   closeOllamaModal();
+  // Pending file import: still run Whisper transcription; debrief summary needs Ollama only.
+  if (_pendingFileImportPath) {
+    _proceedWithMode(_ollamaMode);
+    return;
+  }
   // No debrief — show transcript only
   document.getElementById('debrief-choice').classList.add('hidden');
   document.getElementById('debrief-body').innerHTML =
