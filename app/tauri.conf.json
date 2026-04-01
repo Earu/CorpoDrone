@@ -17,7 +17,8 @@
         "decorations": true,
         "transparent": true,
         "theme": "Dark",
-        "backgroundColor": "#00000000",
+        "titleBarStyle": "Transparent",
+        "backgroundColor": "#000000",
         "windowEffects": {
           "effects": ["acrylic", "underWindowBackground"],
           "color": "#070707"
