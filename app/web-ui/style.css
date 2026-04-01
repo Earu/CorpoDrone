@@ -1086,7 +1086,11 @@ button.btn-ghost:hover { color: var(--text); border-color: var(--text-muted); }
   padding: 10px 0;
   transition: opacity 0.15s;
 }
-.settings-row.settings-disabled { opacity: 0.3; pointer-events: none; }
+.settings-row.settings-disabled,
+.settings-dependent.settings-disabled {
+  opacity: 0.3;
+  pointer-events: none;
+}
 
 .settings-label {
   font-family: var(--mono);
@@ -1229,6 +1233,40 @@ button.btn-ghost:hover { color: var(--text); border-color: var(--text-muted); }
   font-size: 11px;
   color: var(--text-muted);
   letter-spacing: 0.08em;
+}
+
+.settings-details {
+  margin: 8px 0 4px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0 12px 8px;
+  background: rgba(0, 0, 0, 0.15);
+}
+
+.settings-details-summary {
+  cursor: pointer;
+  padding: 10px 0 8px;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  list-style: none;
+}
+
+.settings-details-summary::-webkit-details-marker {
+  display: none;
+}
+
+.settings-details-body {
+  padding-top: 4px;
+}
+
+.settings-row-nested {
+  margin-bottom: 4px;
+}
+
+.settings-row-nested:last-child {
+  margin-bottom: 0;
 }
 
 .settings-restart-note {

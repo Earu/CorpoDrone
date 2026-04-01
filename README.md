@@ -142,6 +142,10 @@ cargo tauri build
 | `python.max_speakers` | `8` | Maximum expected speakers |
 | `python.window_seconds` | `20.0` | Sliding window length for real-time transcription |
 | `python.step_seconds` | `3.0` | How often to process a new window |
+| `python.speech_gate_enabled` | `true` | Skip Whisper on silent windows (RMS + Silero VAD; reduces silence hallucinations). **Settings** exposes presets (“Standard”, “Stricter”, “Softer”) and optional expert fields |
+| `python.speech_gate_rms_db_floor` | `-50.0` | Fast path: below this RMS (dBFS) → no transcription |
+| `python.speech_gate_min_speech_fraction` | `0.12` | Silero: minimum fraction of the window labeled speech |
+| `python.speech_gate_silero_threshold` | `0.5` | Silero speech probability threshold (higher = stricter) |
 | `python.summarize` | `true` | Generate LLM summary at session end |
 | `python.ollama_model` | `mistral` | Ollama model for summarization |
 | `python.ollama_host` | `http://localhost:11434` | Ollama API endpoint |
@@ -164,6 +168,7 @@ To reset the database, delete `speakers_db.json`.
 | Audio resampling | [Rubato](https://github.com/HEnquist/rubato) |
 | Transcription (Apple Silicon) | [mlx-whisper](https://github.com/ml-explore/mlx-examples/tree/main/whisper) — runs on Metal via MLX |
 | Transcription (other) | [faster-whisper](https://github.com/SYSTRAN/faster-whisper) + [WhisperX](https://github.com/m-bain/whisperX) |
+| Live speech gate | RMS prefilter + [Silero VAD](https://github.com/snakers4/silero-vad) via `torch.hub` (before Whisper on all platforms) |
 | Diarization | [PyAnnote 3.1](https://github.com/pyannote/pyannote-audio) |
 | Speaker embeddings | [SpeechBrain ECAPA-TDNN](https://huggingface.co/speechbrain/spkrec-ecapa-voxceleb) |
 | Summarization | [Ollama](https://ollama.com) |

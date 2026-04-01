@@ -52,6 +52,7 @@ from summarizer import Summarizer
 from transcript_writer import TranscriptWriter
 from embedding_extractor import EmbeddingExtractor
 from speaker_database import SpeakerDatabase
+from speech_gate import SpeechGate
 
 log = structlog.get_logger(__name__)
 
@@ -258,6 +259,12 @@ class Pipeline:
 
         # Heavy models — loaded once, reused across sessions
         self.transcriber = Transcriber(cfg.whisper_model, cfg.whisper_device, cfg.whisper_compute_type)
+        self._speech_gate = SpeechGate(
+            enabled=cfg.speech_gate_enabled,
+            rms_db_floor=cfg.speech_gate_rms_db_floor,
+            min_speech_fraction=cfg.speech_gate_min_speech_fraction,
+            silero_threshold=cfg.speech_gate_silero_threshold,
+        )
         self.diarizer = Diarizer(cfg.hf_token, cfg.min_speakers, cfg.max_speakers) if cfg.diarize else None
         self._speaker_db = SpeakerDatabase(cfg.speaker_db_file, cfg.speaker_identify_threshold)
         self._embedder = EmbeddingExtractor(cfg.whisper_device) if cfg.speaker_enroll else None
@@ -329,6 +336,12 @@ class Pipeline:
 
         audio, win_start_abs = stream.get_window()
         if len(audio) < SAMPLE_RATE // 2:
+            return []
+
+        if not self._speech_gate.should_transcribe(audio):
+            stream.emit([], win_start_abs)
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
             return []
 
         segments = self.transcriber.transcribe(audio)
