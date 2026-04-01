@@ -3,8 +3,9 @@
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 :root {
-  --bg:          #070707;
-  --surface:     #0d0d0d;
+  /* Translucent base so Windows acrylic / macOS vibrancy shows through the webview */
+  --bg:          rgba(7, 7, 7, 0.86);
+  --surface:     rgba(13, 13, 13, 0.92);
   --border:      #1a1a1a;
   --border-hi:   #2a2a2a;
   --accent:      #c8ff00;
@@ -35,6 +36,10 @@
 }
 
 /* ── Base ────────────────────────────────────────────────────────── */
+html {
+  background: transparent;
+}
+
 body {
   background: var(--bg);
   color: var(--text);
