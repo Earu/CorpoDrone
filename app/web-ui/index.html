@@ -130,6 +130,57 @@
             <span class="settings-hint">seconds between live transcription updates (3–5 recommended)</span>
           </div>
         </div>
+
+        <div class="settings-row">
+          <label class="settings-label">Silence filtering</label>
+          <div class="settings-control">
+            <label class="settings-toggle">
+              <input type="checkbox" id="s-speech_gate_enabled" onchange="settingsToggle('speech_gate_enabled'); syncSpeechGateUi();">
+              <span class="settings-toggle-track"><span class="settings-toggle-thumb"></span></span>
+            </label>
+            <span class="settings-hint">Skip Whisper when the mic or speaker track is effectively silent — cuts random captions when nobody is talking</span>
+          </div>
+        </div>
+
+        <div class="settings-row settings-dependent" data-depends="speech_gate_enabled">
+          <label class="settings-label">Strictness</label>
+          <div class="settings-control">
+            <select class="settings-select" id="s-speech_gate_preset" onchange="onSpeechGatePresetChange()">
+              <option value="balanced">Standard — balanced</option>
+              <option value="stronger">Stricter — less junk when it’s quiet</option>
+              <option value="gentler">Softer — better for very quiet speech</option>
+              <option value="custom">Custom (expert)…</option>
+            </select>
+            <span class="settings-hint">Stricter = fewer false captions; Softer = less risk of missing real words</span>
+          </div>
+        </div>
+
+        <details class="settings-details settings-dependent" id="speech-gate-custom-details" data-depends="speech_gate_enabled">
+          <summary class="settings-details-summary">Expert parameters</summary>
+          <div class="settings-details-body">
+            <div class="settings-row settings-row-nested">
+              <label class="settings-label">Loudness floor (dB)</label>
+              <div class="settings-control">
+                <input class="settings-input settings-input-sm" type="number" id="s-speech_gate_rms_db_floor" min="-80" max="-20" step="1">
+                <span class="settings-hint">Higher = ignore quieter noise (try −45 to −40 if idle mic still transcribes)</span>
+              </div>
+            </div>
+            <div class="settings-row settings-row-nested">
+              <label class="settings-label">Min. speech in window</label>
+              <div class="settings-control">
+                <input class="settings-input settings-input-sm" type="number" id="s-speech_gate_min_speech_fraction" min="0.02" max="0.5" step="0.01">
+                <span class="settings-hint">Fraction of the window that must look like speech (e.g. 0.12 = 12%)</span>
+              </div>
+            </div>
+            <div class="settings-row settings-row-nested">
+              <label class="settings-label">Detector threshold</label>
+              <div class="settings-control">
+                <input class="settings-input settings-input-sm" type="number" id="s-speech_gate_silero_threshold" min="0.1" max="0.95" step="0.05">
+                <span class="settings-hint">Higher = stricter speech detection (0.5 default)</span>
+              </div>
+            </div>
+          </div>
+        </details>
       </div>
 
       <div class="settings-group">

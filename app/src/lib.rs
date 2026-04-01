@@ -341,6 +341,10 @@ fn get_settings() -> serde_json::Value {
         "max_speakers":                8,
         "window_seconds":              20.0,
         "step_seconds":                3.0,
+        "speech_gate_enabled":         true,
+        "speech_gate_rms_db_floor":    -50.0,
+        "speech_gate_min_speech_fraction": 0.12,
+        "speech_gate_silero_threshold": 0.5,
         "summarize":                   true,
         "ollama_model":                "llama3.1:8b",
         "ollama_host":                 "http://localhost:11434",
@@ -373,7 +377,7 @@ fn get_settings() -> serde_json::Value {
             "audio_input_device" => {
                 m.insert(k.to_string(), serde_json::Value::String(v.to_string()));
             }
-            "diarize" | "summarize" | "speaker_enroll" => {
+            "diarize" | "summarize" | "speaker_enroll" | "speech_gate_enabled" => {
                 m.insert(k.to_string(), serde_json::Value::Bool(v == "true"));
             }
             "min_speakers" | "max_speakers" => {
@@ -381,7 +385,9 @@ fn get_settings() -> serde_json::Value {
                     m.insert(k.to_string(), n.into());
                 }
             }
-            "window_seconds" | "step_seconds" | "speaker_identify_threshold" => {
+            "window_seconds" | "step_seconds" | "speaker_identify_threshold" |
+            "speech_gate_rms_db_floor" | "speech_gate_min_speech_fraction" |
+            "speech_gate_silero_threshold" => {
                 if let Ok(f) = v.parse::<f64>() {
                     m.insert(k.to_string(), serde_json::json!(f));
                 }
@@ -480,6 +486,12 @@ max_speakers = {max_speakers}
 window_seconds = {window_seconds}
 step_seconds = {step_seconds}
 
+# Silence filtering before Whisper (RMS + Silero VAD)
+speech_gate_enabled = {speech_gate_enabled}
+speech_gate_rms_db_floor = {speech_gate_rms_db_floor}
+speech_gate_min_speech_fraction = {speech_gate_min_speech_fraction}
+speech_gate_silero_threshold = {speech_gate_silero_threshold}
+
 # Summarization via Ollama
 summarize = {summarize}
 ollama_model = \"{ollama_model}\"
@@ -501,6 +513,12 @@ audio_input_device = \"{audio_input_device}\"
         max_speakers              = i64_val!("max_speakers", 8),
         window_seconds            = fmt_float(f64_val!("window_seconds", 20.0)),
         step_seconds              = fmt_float(f64_val!("step_seconds", 3.0)),
+        speech_gate_enabled       = bool_val!("speech_gate_enabled", true),
+        speech_gate_rms_db_floor  = fmt_float(f64_val!("speech_gate_rms_db_floor", -50.0)),
+        speech_gate_min_speech_fraction =
+            fmt_float(f64_val!("speech_gate_min_speech_fraction", 0.12)),
+        speech_gate_silero_threshold =
+            fmt_float(f64_val!("speech_gate_silero_threshold", 0.5)),
         summarize                 = bool_val!("summarize", true),
         ollama_model              = str_val!("ollama_model", "llama3.1:8b"),
         ollama_host               = str_val!("ollama_host", "http://localhost:11434"),

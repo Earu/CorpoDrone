@@ -56,6 +56,12 @@ class Config:
     window_seconds: float = 5.0           # transcription window size
     step_seconds: float = 1.0            # how often to process a new window
 
+    # Pre-transcription speech gate (RMS + Silero VAD) — same on all ASR backends
+    speech_gate_enabled: bool = True
+    speech_gate_rms_db_floor: float = -50.0
+    speech_gate_min_speech_fraction: float = 0.12
+    speech_gate_silero_threshold: float = 0.5
+
     # Summarization (generated once at end of session)
     summarize: bool = True
     ollama_model: str = "llama3.1:8b"

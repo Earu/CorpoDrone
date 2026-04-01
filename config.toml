@@ -16,6 +16,12 @@ max_speakers = 8
 window_seconds = 20.0
 step_seconds = 3.0
 
+# Skip Whisper when the window looks like silence (reduces hallucinations). RMS fast-path + Silero VAD.
+speech_gate_enabled = true
+speech_gate_rms_db_floor = -50.0
+speech_gate_min_speech_fraction = 0.12
+speech_gate_silero_threshold = 0.5
+
 # Summarization via Ollama
 summarize = true
 ollama_model = "mistral"

@@ -14,6 +14,13 @@ const SPEAKER_COLORS = [
   '#fc8181', '#b794f4', '#76e4f7', '#fbd38d',
 ];
 
+/** Maps to pipeline speech_gate_* keys; “Custom” uses the three number inputs */
+const SPEECH_GATE_PRESETS = {
+  balanced: { rms: -50, frac: 0.12, thr: 0.5 },
+  stronger: { rms: -44, frac: 0.2, thr: 0.62 },
+  gentler: { rms: -56, frac: 0.07, thr: 0.35 },
+};
+
 // ---- Tauri bridge ----
 function invoke(cmd, args) {
   return window.__TAURI__.core.invoke(cmd, args);
@@ -597,6 +604,16 @@ async function openSettings() {
   set('whisper_compute_type',       s.whisper_compute_type);
   set('window_seconds',             s.window_seconds);
   set('step_seconds',               s.step_seconds);
+  set('speech_gate_enabled',        s.speech_gate_enabled !== false);
+  set('speech_gate_rms_db_floor',     s.speech_gate_rms_db_floor ?? -50);
+  set('speech_gate_min_speech_fraction', s.speech_gate_min_speech_fraction ?? 0.12);
+  set('speech_gate_silero_threshold', s.speech_gate_silero_threshold ?? 0.5);
+  const sgRms = Number(s.speech_gate_rms_db_floor ?? -50);
+  const sgFrac = Number(s.speech_gate_min_speech_fraction ?? 0.12);
+  const sgThr = Number(s.speech_gate_silero_threshold ?? 0.5);
+  const sgPreset = inferSpeechGatePreset(sgRms, sgFrac, sgThr);
+  const presetEl = document.getElementById('s-speech_gate_preset');
+  if (presetEl) presetEl.value = sgPreset;
   set('diarize',                    s.diarize);
   set('hf_token',                   s.hf_token);
   set('min_speakers',               s.min_speakers);
@@ -611,9 +628,11 @@ async function openSettings() {
   await refreshAudioDevices(savedIn);
 
   // Sync dependent row visibility
+  _syncSettingsDependents('speech_gate_enabled');
   _syncSettingsDependents('diarize');
   _syncSettingsDependents('speaker_enroll');
   _syncSettingsDependents('summarize');
+  syncSpeechGateUi();
 
   showPage('settings');
 }
@@ -624,6 +643,51 @@ function closeSettings() {
 
 function settingsToggle(key) {
   _syncSettingsDependents(key);
+}
+
+function inferSpeechGatePreset(rms, frac, thr) {
+  const tolR = 2.5;
+  const tolF = 0.035;
+  const tolT = 0.09;
+  for (const [name, p] of Object.entries(SPEECH_GATE_PRESETS)) {
+    if (
+      Math.abs(rms - p.rms) <= tolR &&
+      Math.abs(frac - p.frac) <= tolF &&
+      Math.abs(thr - p.thr) <= tolT
+    ) {
+      return name;
+    }
+  }
+  return 'custom';
+}
+
+function applySpeechGatePreset(presetKey) {
+  if (presetKey === 'custom' || !SPEECH_GATE_PRESETS[presetKey]) return;
+  const p = SPEECH_GATE_PRESETS[presetKey];
+  const set = (id, val) => {
+    const el = document.getElementById('s-' + id);
+    if (el) el.value = val;
+  };
+  set('speech_gate_rms_db_floor', p.rms);
+  set('speech_gate_min_speech_fraction', p.frac);
+  set('speech_gate_silero_threshold', p.thr);
+}
+
+function syncSpeechGateUi() {
+  const enabled = document.getElementById('s-speech_gate_enabled')?.checked ?? false;
+  const preset = document.getElementById('s-speech_gate_preset')?.value ?? 'balanced';
+  const details = document.getElementById('speech-gate-custom-details');
+  if (details) {
+    const showExpert = enabled && preset === 'custom';
+    details.style.display = showExpert ? '' : 'none';
+    details.open = showExpert;
+  }
+}
+
+function onSpeechGatePresetChange() {
+  const preset = document.getElementById('s-speech_gate_preset')?.value ?? 'balanced';
+  if (preset !== 'custom') applySpeechGatePreset(preset);
+  syncSpeechGateUi();
 }
 
 function toggleTokenReveal() {
@@ -652,12 +716,32 @@ async function saveSettings() {
     return el.value;
   };
 
+  const sgOn = get('speech_gate_enabled');
+  const sgPreset = document.getElementById('s-speech_gate_preset')?.value ?? 'balanced';
+  let sgRms;
+  let sgFrac;
+  let sgThr;
+  if (sgOn && sgPreset !== 'custom' && SPEECH_GATE_PRESETS[sgPreset]) {
+    const p = SPEECH_GATE_PRESETS[sgPreset];
+    sgRms = p.rms;
+    sgFrac = p.frac;
+    sgThr = p.thr;
+  } else {
+    sgRms = get('speech_gate_rms_db_floor');
+    sgFrac = get('speech_gate_min_speech_fraction');
+    sgThr = get('speech_gate_silero_threshold');
+  }
+
   const settings = {
     whisper_model:               get('whisper_model'),
     whisper_device:              get('whisper_device'),
     whisper_compute_type:        get('whisper_compute_type'),
     window_seconds:              get('window_seconds'),
     step_seconds:                get('step_seconds'),
+    speech_gate_enabled:         sgOn,
+    speech_gate_rms_db_floor:    sgRms,
+    speech_gate_min_speech_fraction: sgFrac,
+    speech_gate_silero_threshold: sgThr,
     diarize:                     get('diarize'),
     hf_token:                    get('hf_token'),
     min_speakers:                Math.round(get('min_speakers')),
