@@ -1,6 +1,6 @@
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex as TokioMutex;
 
@@ -208,8 +208,14 @@ fn set_mute(muted: bool) -> serde_json::Value {
 #[tauri::command]
 async fn list_audio_devices(state: State<'_, Arc<Config>>) -> Result<serde_json::Value, String> {
     let bin = state.capture_bin.clone();
-    let output = tokio::process::Command::new(&bin)
-        .arg("list-devices")
+    let mut cmd = tokio::process::Command::new(&bin);
+    cmd.arg("list-devices");
+    #[cfg(windows)]
+    {
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    let output = cmd
         .output()
         .await
         .map_err(|e| format!("Failed to run audio-capture list-devices: {e}"))?;
@@ -1022,6 +1028,43 @@ fn kill_subprocesses() {
 
 // ---- App entry point ----
 
+/// Darken the native caption to match the UI (DWM acrylic defaults are fairly light).
+#[cfg(windows)]
+fn apply_windows_dark_title_chrome<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) {
+    use windows::Win32::Graphics::Dwm::{
+        DwmSetWindowAttribute, DWMWA_BORDER_COLOR, DWMWA_CAPTION_COLOR, DWMWA_TEXT_COLOR,
+    };
+
+    let Ok(hwnd) = window.hwnd() else {
+        return;
+    };
+
+    // COLORREF is 0x00bbggrr — #030303 caption / border, light gray title text
+    const CAPTION_BGR: u32 = 0x00030303;
+    const TEXT_BGR: u32 = 0x00e0e0e0;
+
+    unsafe {
+        let _ = DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_CAPTION_COLOR,
+            &CAPTION_BGR as *const u32 as *const _,
+            std::mem::size_of::<u32>() as u32,
+        );
+        let _ = DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_BORDER_COLOR,
+            &CAPTION_BGR as *const u32 as *const _,
+            std::mem::size_of::<u32>() as u32,
+        );
+        let _ = DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_TEXT_COLOR,
+            &TEXT_BGR as *const u32 as *const _,
+            std::mem::size_of::<u32>() as u32,
+        );
+    }
+}
+
 pub fn run() {
     if let Ok(exe) = std::env::current_exe() {
         if let Some(exe_dir) = exe.parent() {
@@ -1073,6 +1116,11 @@ pub fn run() {
             import_audio_file,
         ])
         .setup(move |app| {
+            #[cfg(windows)]
+            if let Some(w) = app.get_webview_window("main") {
+                apply_windows_dark_title_chrome(&w);
+            }
+
             let app_handle = app.handle().clone();
             let pipe_path = cfg.transcript_pipe.clone();
 
