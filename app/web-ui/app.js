@@ -1500,7 +1500,7 @@ async function _setupStepOllama(body) {
             <div class="setup-status-sub">
               Ollama powers the AI meeting debrief summaries. You can install it later — transcription and diarization work without it.<br><br>
               Download from <a href="#" onclick="openUrl('https://ollama.com')">ollama.com</a>, then pull a model:<br>
-              <code>ollama pull llama3.1:8b</code>
+              <code>ollama pull mistral</code>
             </div>
           </div>
         </div>`;
