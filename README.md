@@ -45,7 +45,6 @@ Capture audio from your microphone and speakers simultaneously, transcribe with 
 
 - **Screen Recording permission** granted to your terminal app (for loopback capture via ScreenCaptureKit)
 - **Microphone permission** granted to your terminal app
-- **`./setup.sh`** in Bash, or [PowerShell](https://github.com/PowerShell/PowerShell) (`brew install --cask powershell`) for `pwsh ./setup.ps1`
 
 ### Linux additional requirements
 
@@ -85,32 +84,19 @@ cd CorpoDrone
 
 ### 2. Configure
 
-Copy the environment template and add your HuggingFace token:
-
-```bash
-cp .env.example .env
-# Edit .env and set HUGGINGFACE_TOKEN=hf_...
-```
-
 Edit `config.toml` to adjust the Whisper model size, speaker limits, Ollama model, etc.
 
-### 3. Python environment (required)
-
-Install the Python stack with **`setup.ps1`** or **`setup.sh`**. Both create `.venv`, install **PyTorch** / **torchaudio** (CUDA on Windows, CPU on Linux, CPU/MPS on macOS), **mlx-whisper** on macOS, then `pipeline/requirements.txt`, and can prompt for your HuggingFace token.
-
-From the repo root:
-
-**macOS / Linux** (Bash — includes Git Bash on Windows):
+### 3. Build and run
 
 ```bash
-./setup.sh
+cargo tauri dev
 ```
 
-**Windows**, or any OS with [PowerShell 7+](https://github.com/PowerShell/PowerShell) (`pwsh`):
-
-```powershell
-pwsh ./setup.ps1
-```
+On first launch the app will open a **setup wizard** that handles everything automatically:
+- Detects Python 3.11 or 3.12 on your PATH
+- Creates `.venv` and installs PyTorch (CUDA on Windows, CPU on Linux, CPU/MPS + mlx-whisper on macOS) and all pipeline dependencies
+- Prompts for your HuggingFace token (required for speaker diarization)
+- Checks whether Ollama is installed
 
 ### 4. Pull Ollama model
 
@@ -118,13 +104,7 @@ pwsh ./setup.ps1
 ollama pull mistral
 ```
 
-### 5. Build and run
-
-```bash
-cargo tauri dev
-```
-
-For a production build:
+### 5. Production build
 
 ```bash
 cargo tauri build

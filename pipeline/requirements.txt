@@ -1,5 +1,5 @@
 # !! Requires Python 3.11 or 3.12. Python 3.13 is NOT supported by WhisperX/PyAnnote yet.
-# torch / torchaudio: installed by ../setup.ps1 before this file (platform-specific wheels).
+# torch / torchaudio: installed by the app's built-in setup wizard before this file (platform-specific wheels).
 # Must stay <2.9: torchaudio 2.9+ removed torchaudio.AudioMetaData, breaking pyannote.audio.
 # Manual install: pip install 'torch>=2.5,<2.9' 'torchaudio>=2.5,<2.9'  (+ CUDA index on Windows if needed)
 

@@ -8,6 +8,7 @@ static RECORDING: AtomicBool = AtomicBool::new(false);
 static MUTED: AtomicBool = AtomicBool::new(false);
 static PYTHON_PID: AtomicU32 = AtomicU32::new(0);
 static SHUTTING_DOWN: AtomicBool = AtomicBool::new(false);
+static PIPELINE_STARTED: AtomicBool = AtomicBool::new(false);
 
 struct Config {
     transcript_pipe: String,
@@ -136,6 +137,92 @@ fn read_mic_device_from_config() -> String {
         }
     }
     input
+}
+
+// ---- Setup helpers ----
+
+fn venv_pip_exists() -> bool {
+    #[cfg(windows)]
+    return std::path::Path::new(r".venv\Scripts\pip.exe").exists();
+    #[cfg(not(windows))]
+    return std::path::Path::new(".venv/bin/pip").exists();
+}
+
+async fn probe_python_candidates() -> Option<(Vec<String>, String)> {
+    let candidates: Vec<Vec<String>> = vec![
+        vec!["py".into(), "-3.12".into()],
+        vec!["py".into(), "-3.11".into()],
+        vec!["python3.12".into()],
+        vec!["python3.11".into()],
+    ];
+    for parts in candidates {
+        let mut cmd = tokio::process::Command::new(&parts[0]);
+        if parts.len() > 1 {
+            cmd.args(&parts[1..]);
+        }
+        cmd.arg("--version");
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::piped());
+        #[cfg(windows)]
+        {
+            const CREATE_NO_WINDOW: u32 = 0x08000000;
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
+        if let Ok(out) = cmd.output().await {
+            if out.status.success() {
+                let ver = {
+                    let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                    if s.is_empty() {
+                        String::from_utf8_lossy(&out.stderr).trim().to_string()
+                    } else {
+                        s
+                    }
+                };
+                return Some((parts, ver));
+            }
+        }
+    }
+    None
+}
+
+/// Run a subprocess, streaming stdout+stderr line-by-line as `setup-log` events.
+async fn run_subprocess_streaming(app: &AppHandle, program: &str, args: &[&str]) -> Result<(), String> {
+    use tokio::io::{AsyncBufReadExt, BufReader};
+    let mut cmd = tokio::process::Command::new(program);
+    cmd.args(args);
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+    #[cfg(windows)]
+    {
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    let mut child = cmd.spawn().map_err(|e| format!("spawn failed: {e}"))?;
+    let app_out = app.clone();
+    let h_out = child.stdout.take().map(|stdout| {
+        tokio::spawn(async move {
+            let mut lines = BufReader::new(stdout).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                let _ = app_out.emit("setup-log", serde_json::json!({ "line": line }));
+            }
+        })
+    });
+    let app_err = app.clone();
+    let h_err = child.stderr.take().map(|stderr| {
+        tokio::spawn(async move {
+            let mut lines = BufReader::new(stderr).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                let _ = app_err.emit("setup-log", serde_json::json!({ "line": line }));
+            }
+        })
+    });
+    let status = child.wait().await.map_err(|e| e.to_string())?;
+    if let Some(h) = h_out { let _ = h.await; }
+    if let Some(h) = h_err { let _ = h.await; }
+    if !status.success() {
+        return Err(format!("exited with code {:?}", status.code()));
+    }
+    Ok(())
 }
 
 // ---- Log helpers ----
@@ -725,6 +812,151 @@ fn rename_speaker(person_id: String, name: String) -> serde_json::Value {
     serde_json::json!({ "ok": ok })
 }
 
+// ---- Setup wizard commands ----
+
+#[tauri::command]
+async fn check_setup_needed() -> bool {
+    !venv_pip_exists()
+}
+
+#[tauri::command]
+async fn check_python() -> serde_json::Value {
+    match probe_python_candidates().await {
+        Some((parts, ver)) => serde_json::json!({
+            "found": true,
+            "executable": parts.join(" "),
+            "version": ver,
+        }),
+        None => serde_json::json!({ "found": false, "executable": "", "version": "" }),
+    }
+}
+
+#[tauri::command]
+async fn run_setup(app: AppHandle) -> Result<serde_json::Value, String> {
+    macro_rules! log {
+        ($msg:expr) => {
+            let _ = app.emit("setup-log", serde_json::json!({ "line": $msg }));
+        };
+    }
+
+    let Some((py_parts, py_ver)) = probe_python_candidates().await else {
+        return Err("Python 3.11 or 3.12 not found on PATH".into());
+    };
+    log!(format!("✓ Found {py_ver}"));
+
+    // [1/3] Create venv
+    log!("[1/3] Creating virtual environment...");
+    if !std::path::Path::new(".venv").exists() {
+        let mut cmd = tokio::process::Command::new(&py_parts[0]);
+        if py_parts.len() > 1 { cmd.args(&py_parts[1..]); }
+        cmd.args(["-m", "venv", ".venv"]);
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::piped());
+        #[cfg(windows)]
+        { const CREATE_NO_WINDOW: u32 = 0x08000000; cmd.creation_flags(CREATE_NO_WINDOW); }
+        let output = cmd.output().await.map_err(|e| format!("venv spawn failed: {e}"))?;
+        if !output.status.success() {
+            let err = String::from_utf8_lossy(&output.stderr).to_string();
+            return Err(format!("venv creation failed: {err}"));
+        }
+        log!("  Virtual environment created.");
+    } else {
+        log!("  .venv already exists — skipping.");
+    }
+
+    #[cfg(windows)]
+    let pip = r".venv\Scripts\pip.exe";
+    #[cfg(not(windows))]
+    let pip = ".venv/bin/pip";
+
+    const TORCH_PIN: &[&str] = &["torch>=2.5.0,<2.9.0", "torchaudio>=2.5.0,<2.9.0"];
+
+    // [2/3] PyTorch
+    log!("[2/3] Installing PyTorch (this may take several minutes)...");
+    {
+        let mut args: Vec<&str> = vec!["install"];
+        args.extend(TORCH_PIN);
+        #[cfg(windows)]
+        args.extend(&["--index-url", "https://download.pytorch.org/whl/cu121"]);
+        run_subprocess_streaming(&app, pip, &args).await
+            .map_err(|e| format!("PyTorch install failed: {e}"))?;
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        log!("  Installing mlx-whisper (Apple Silicon transcription)...");
+        run_subprocess_streaming(&app, pip, &["install", "mlx-whisper"]).await
+            .map_err(|e| format!("mlx-whisper install failed: {e}"))?;
+    }
+
+    // [3/3] Pipeline requirements
+    log!("[3/3] Installing pipeline dependencies...");
+    run_subprocess_streaming(&app, pip, &["install", "-r", "pipeline/requirements.txt"]).await
+        .map_err(|e| format!("Dependency install failed: {e}"))?;
+
+    // Re-pin torch to exact version range
+    log!("Re-pinning PyTorch to ensure version compatibility...");
+    {
+        let mut args: Vec<&str> = vec!["install"];
+        args.extend(TORCH_PIN);
+        args.extend(&["--force-reinstall", "--no-deps"]);
+        #[cfg(windows)]
+        args.extend(&["--index-url", "https://download.pytorch.org/whl/cu121"]);
+        run_subprocess_streaming(&app, pip, &args).await
+            .map_err(|e| format!("PyTorch re-pin failed: {e}"))?;
+    }
+
+    log!("=== Setup complete ===");
+    Ok(serde_json::json!({ "ok": true }))
+}
+
+/// Save a HuggingFace token to .env (get_settings already reads it from there as fallback).
+#[tauri::command]
+fn save_hf_token(token: String) -> Result<serde_json::Value, String> {
+    std::fs::write(".env", format!("HUGGINGFACE_TOKEN={token}\n"))
+        .map_err(|e| e.to_string())?;
+    Ok(serde_json::json!({ "ok": true }))
+}
+
+#[tauri::command]
+async fn check_ollama_installed() -> serde_json::Value {
+    let mut cmd = tokio::process::Command::new("ollama");
+    cmd.arg("--version");
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+    #[cfg(windows)]
+    { const CREATE_NO_WINDOW: u32 = 0x08000000; cmd.creation_flags(CREATE_NO_WINDOW); }
+    match cmd.output().await {
+        Ok(out) if out.status.success() => {
+            let ver = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            serde_json::json!({ "installed": true, "version": ver })
+        }
+        _ => serde_json::json!({ "installed": false, "version": "" }),
+    }
+}
+
+/// Start the Python pipeline (only needed when setup was just completed; normally auto-started).
+#[tauri::command]
+async fn launch_pipeline(
+    cfg: State<'_, Arc<Config>>,
+    stdin_state: State<'_, Arc<PythonStdin>>,
+    app: AppHandle,
+) -> Result<serde_json::Value, String> {
+    if PIPELINE_STARTED.swap(true, Ordering::Relaxed) {
+        return Ok(serde_json::json!({ "ok": true, "note": "already started" }));
+    }
+    let cfg_clone = Arc::clone(&*cfg);
+    let stdin_clone = Arc::clone(&*stdin_state);
+    tauri::async_runtime::spawn(async move {
+        if let Err(e) = spawn_python(&cfg_clone, stdin_clone, app).await {
+            tracing::warn!("Pipeline launch failed: {e}");
+        }
+    });
+    Ok(serde_json::json!({ "ok": true }))
+}
+
+// ---- File operations ----
+
 /// Open a native file-picker dialog and return the selected path (or null if cancelled).
 #[tauri::command]
 async fn pick_audio_file() -> Result<Option<String>, String> {
@@ -1089,6 +1321,7 @@ pub fn run() {
 
     let cfg = Arc::new(load_config());
     let python_stdin = Arc::new(PythonStdin(TokioMutex::new(None)));
+    let venv_ready = venv_pip_exists();
 
     tauri::Builder::default()
         .manage(Arc::clone(&cfg))
@@ -1114,6 +1347,12 @@ pub fn run() {
             rename_speaker,
             pick_audio_file,
             import_audio_file,
+            check_setup_needed,
+            check_python,
+            run_setup,
+            save_hf_token,
+            check_ollama_installed,
+            launch_pipeline,
         ])
         .setup(move |app| {
             #[cfg(windows)]
@@ -1128,14 +1367,19 @@ pub fn run() {
                 run_pipe_reader(pipe_path, app_handle).await;
             });
 
-            let cfg_py = Arc::clone(&cfg);
-            let stdin_py = Arc::clone(&python_stdin);
-            let app_py = app.handle().clone();
-            tauri::async_runtime::spawn(async move {
-                if let Err(e) = spawn_python(&cfg_py, stdin_py, app_py).await {
-                    tracing::warn!("Could not auto-start Python pipeline: {e}");
-                }
-            });
+            // Only auto-start if the venv is already set up; otherwise the setup wizard
+            // will call `launch_pipeline` after completing first-time setup.
+            if venv_ready {
+                PIPELINE_STARTED.store(true, Ordering::Relaxed);
+                let cfg_py = Arc::clone(&cfg);
+                let stdin_py = Arc::clone(&python_stdin);
+                let app_py = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Err(e) = spawn_python(&cfg_py, stdin_py, app_py).await {
+                        tracing::warn!("Could not auto-start Python pipeline: {e}");
+                    }
+                });
+            }
 
             Ok(())
         })
