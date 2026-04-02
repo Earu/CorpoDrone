@@ -1256,6 +1256,271 @@ function escHtml(str) {
     .replace(/"/g, '&quot;');
 }
 
+// ── Setup wizard ─────────────────────────────────────────────────────────
+
+const SETUP_STEP_META = [
+  { title: 'PYTHON',       sub: 'Checking for Python 3.11 or 3.12' },
+  { title: 'DEPENDENCIES', sub: 'Installing Python packages' },
+  { title: 'HUGGING FACE', sub: 'Speaker diarization token (optional)' },
+  { title: 'OLLAMA',       sub: 'Local LLM for meeting summaries (optional)' },
+];
+
+let _setupStep = 0;
+let _setupLogUnlisten = null;
+
+async function checkAndShowSetup() {
+  try {
+    const needed = await invoke('check_setup_needed');
+    if (needed) {
+      document.getElementById('setup-modal').classList.remove('hidden');
+      await renderSetupStep(0);
+    }
+  } catch (e) {
+    console.warn('check_setup_needed failed', e);
+  }
+}
+
+function _updateSetupHeader(step) {
+  _setupStep = step;
+  const meta = SETUP_STEP_META[step];
+  document.getElementById('setup-modal-title').textContent = meta.title;
+  document.getElementById('setup-modal-sub').textContent   = meta.sub;
+  document.querySelectorAll('.setup-step-pip').forEach((pip, i) => {
+    pip.classList.toggle('done',   i < step);
+    pip.classList.toggle('active', i === step);
+  });
+}
+
+function _setSetupFooter(html) {
+  document.getElementById('setup-modal-footer').innerHTML = html;
+}
+
+async function renderSetupStep(step) {
+  _updateSetupHeader(step);
+  const body = document.getElementById('setup-modal-body');
+  switch (step) {
+    case 0: await _setupStepPython(body); break;
+    case 1: await _setupStepDeps(body);   break;
+    case 2: await _setupStepHF(body);     break;
+    case 3: await _setupStepOllama(body); break;
+  }
+}
+
+// Step 0 — Python check
+async function _setupStepPython(body) {
+  body.innerHTML = `<div class="setup-checking"><div class="spinner"></div><span>Checking for Python 3.11 or 3.12…</span></div>`;
+  _setSetupFooter('');
+  try {
+    const r = await invoke('check_python');
+    if (r.found) {
+      body.innerHTML = `
+        <div class="setup-status">
+          <span class="setup-icon setup-icon-ok">✓</span>
+          <div>
+            <div class="setup-status-title">${escHtml(r.version)}</div>
+            <div class="setup-status-sub">Detected at: <code>${escHtml(r.executable)}</code></div>
+          </div>
+        </div>`;
+      _setSetupFooter(`<button class="btn-modal-primary" onclick="renderSetupStep(1)">Next →</button>`);
+    } else {
+      body.innerHTML = `
+        <div class="setup-status">
+          <span class="setup-icon setup-icon-err">✗</span>
+          <div>
+            <div class="setup-status-title">Python 3.11 or 3.12 not found</div>
+            <div class="setup-status-sub">
+              Download and install Python from
+              <a href="#" onclick="openUrl('https://www.python.org/downloads/')">python.org/downloads</a>.<br>
+              During installation, make sure to check <strong>"Add Python to PATH"</strong>.<br>
+              Then restart CorpoDrone and run setup again.
+            </div>
+          </div>
+        </div>`;
+      _setSetupFooter(`<button class="btn-ghost" onclick="renderSetupStep(0)">Retry</button>`);
+    }
+  } catch (e) {
+    body.innerHTML = `<div class="setup-status"><span class="setup-icon setup-icon-err">✗</span><div class="setup-status-sub">Check failed: ${escHtml(String(e))}</div></div>`;
+    _setSetupFooter(`<button class="btn-ghost" onclick="renderSetupStep(0)">Retry</button>`);
+  }
+}
+
+function openUrl(url) {
+  try { window.__TAURI__.shell.open(url); } catch (_) {}
+}
+
+// Step 1 — Install deps
+async function _setupStepDeps(body) {
+  body.innerHTML = `
+    <div class="setup-install-row">
+      <div class="setup-install-desc">
+        This will create a Python virtual environment and install all required packages:<br>
+        PyTorch, Whisper, pyannote diarization, and other pipeline dependencies.<br>
+        <strong>This may take 10–30 minutes</strong> depending on your connection.
+      </div>
+    </div>`;
+  _setSetupFooter(`<button class="btn-modal-primary" onclick="_runSetupInstall()">Install</button>`);
+}
+
+async function _runSetupInstall() {
+  const body = document.getElementById('setup-modal-body');
+  body.innerHTML = `
+    <div class="setup-install-row">
+      <div class="setup-checking"><div class="spinner"></div><span>Installing… do not close this window.</span></div>
+      <div class="setup-console" id="setup-console"></div>
+    </div>`;
+  _setSetupFooter('');
+
+  // Subscribe to streaming log lines
+  if (_setupLogUnlisten) { _setupLogUnlisten(); _setupLogUnlisten = null; }
+  _setupLogUnlisten = await window.__TAURI__.event.listen('setup-log', (event) => {
+    _appendSetupLog(event.payload.line);
+  });
+
+  try {
+    await invoke('run_setup');
+    if (_setupLogUnlisten) { _setupLogUnlisten(); _setupLogUnlisten = null; }
+    body.innerHTML = `
+      <div class="setup-status">
+        <span class="setup-icon setup-icon-ok">✓</span>
+        <div>
+          <div class="setup-status-title">Dependencies installed successfully</div>
+          <div class="setup-status-sub">All Python packages are ready.</div>
+        </div>
+      </div>`;
+    _setSetupFooter(`<button class="btn-modal-primary" onclick="renderSetupStep(2)">Next →</button>`);
+  } catch (err) {
+    if (_setupLogUnlisten) { _setupLogUnlisten(); _setupLogUnlisten = null; }
+    const console_el = document.getElementById('setup-console');
+    const logHtml = console_el ? console_el.innerHTML : '';
+    body.innerHTML = `
+      <div class="setup-status" style="margin-bottom:12px">
+        <span class="setup-icon setup-icon-err">✗</span>
+        <div>
+          <div class="setup-status-title">Installation failed</div>
+          <div class="setup-status-sub">${escHtml(String(err))}</div>
+        </div>
+      </div>
+      <div class="setup-console">${logHtml}</div>`;
+    _setSetupFooter(`<button class="btn-ghost" onclick="renderSetupStep(1)">Retry</button>`);
+  }
+}
+
+function _appendSetupLog(line) {
+  const el = document.getElementById('setup-console');
+  if (!el) return;
+  const span = document.createElement('span');
+  span.className = 'setup-console-line' +
+    (line.startsWith('===') || line.startsWith('✓') ? ' ok' : '') +
+    (line.toLowerCase().includes('error') || line.toLowerCase().includes('failed') ? ' err' : '');
+  span.textContent = line + '\n';
+  el.appendChild(span);
+  el.scrollTop = el.scrollHeight;
+}
+
+// Step 2 — HuggingFace token
+async function _setupStepHF(body) {
+  // Pre-fill if token already set
+  let existingToken = '';
+  try {
+    const s = await invoke('get_settings');
+    if (s.hf_token && s.hf_token.startsWith('hf_')) existingToken = s.hf_token;
+  } catch (_) {}
+
+  if (existingToken) {
+    body.innerHTML = `
+      <div class="setup-status">
+        <span class="setup-icon setup-icon-ok">✓</span>
+        <div>
+          <div class="setup-status-title">Token already configured</div>
+          <div class="setup-status-sub">Your HuggingFace token is saved. Speaker diarization is enabled.</div>
+        </div>
+      </div>`;
+    _setSetupFooter(`<button class="btn-ghost" onclick="renderSetupStep(3)">Skip</button><button class="btn-modal-primary" onclick="renderSetupStep(3)">Next →</button>`);
+    return;
+  }
+
+  body.innerHTML = `
+    <div class="setup-status" style="margin-bottom:14px">
+      <span class="setup-icon setup-icon-warn">⚠</span>
+      <div>
+        <div class="setup-status-title">HuggingFace token required for diarization</div>
+        <div class="setup-status-sub">Speaker identification requires a free HuggingFace account and token. You can skip this and add it later in Settings.</div>
+      </div>
+    </div>
+    <div class="setup-token-input-group">
+      <ul class="setup-steps-list">
+        <li>Create a free account at <a href="#" onclick="openUrl('https://huggingface.co')">huggingface.co</a></li>
+        <li>Accept model terms at <a href="#" onclick="openUrl('https://huggingface.co/pyannote/speaker-diarization-3.1')">pyannote/speaker-diarization-3.1</a></li>
+        <li>Generate a token at <a href="#" onclick="openUrl('https://huggingface.co/settings/tokens')">huggingface.co/settings/tokens</a></li>
+      </ul>
+      <input class="setup-token-input" id="setup-hf-input" type="password" placeholder="hf_…" autocomplete="off">
+    </div>`;
+  _setSetupFooter(`
+    <button class="btn-ghost" onclick="renderSetupStep(3)">Skip</button>
+    <button class="btn-modal-primary" onclick="_saveSetupHFToken()">Save &amp; Next →</button>`);
+}
+
+async function _saveSetupHFToken() {
+  const input = document.getElementById('setup-hf-input');
+  const token = input ? input.value.trim() : '';
+  if (!token.startsWith('hf_')) {
+    input.style.borderColor = 'var(--danger)';
+    setTimeout(() => { input.style.borderColor = ''; }, 1500);
+    return;
+  }
+  try {
+    await invoke('save_hf_token', { token });
+  } catch (e) {
+    console.warn('save_hf_token failed', e);
+  }
+  await renderSetupStep(3);
+}
+
+// Step 3 — Ollama
+async function _setupStepOllama(body) {
+  body.innerHTML = `<div class="setup-checking"><div class="spinner"></div><span>Checking for Ollama…</span></div>`;
+  _setSetupFooter('');
+  try {
+    const r = await invoke('check_ollama_installed');
+    if (r.installed) {
+      body.innerHTML = `
+        <div class="setup-status">
+          <span class="setup-icon setup-icon-ok">✓</span>
+          <div>
+            <div class="setup-status-title">Ollama detected</div>
+            <div class="setup-status-sub">${escHtml(r.version) || 'Ollama is installed.'} Meeting summaries will be available.</div>
+          </div>
+        </div>`;
+    } else {
+      body.innerHTML = `
+        <div class="setup-status">
+          <span class="setup-icon setup-icon-warn">⚠</span>
+          <div>
+            <div class="setup-status-title">Ollama not found</div>
+            <div class="setup-status-sub">
+              Ollama powers the AI meeting debrief summaries. You can install it later — transcription and diarization work without it.<br><br>
+              Download from <a href="#" onclick="openUrl('https://ollama.com')">ollama.com</a>, then pull a model:<br>
+              <code>ollama pull llama3.1:8b</code>
+            </div>
+          </div>
+        </div>`;
+    }
+  } catch (e) {
+    body.innerHTML = `<div class="setup-status"><span class="setup-icon setup-icon-warn">⚠</span><div class="setup-status-sub">Could not check Ollama: ${escHtml(String(e))}</div></div>`;
+  }
+  _setSetupFooter(`<button class="btn-modal-primary" onclick="_finishSetup()">Finish Setup</button>`);
+}
+
+async function _finishSetup() {
+  document.getElementById('setup-modal').classList.add('hidden');
+  // Start the Python pipeline now that setup is complete
+  try {
+    await invoke('launch_pipeline');
+  } catch (e) {
+    console.warn('launch_pipeline failed', e);
+  }
+}
+
 // Auto-scroll toggle on manual scroll
 document.addEventListener('DOMContentLoaded', () => {
   const transcript = document.getElementById('transcript');
@@ -1269,6 +1534,7 @@ document.addEventListener('DOMContentLoaded', () => {
     .catch(() => {});
 
   connectTauri();
+  checkAndShowSetup();
 });
 
 // ---- Debug log drawer ----
