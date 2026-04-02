@@ -16,7 +16,7 @@ max_speakers = 8
 window_seconds = 20.0
 step_seconds = 3.0
 
-# Skip Whisper when the window looks like silence (reduces hallucinations). RMS fast-path + Silero VAD.
+# Silence filtering before Whisper (RMS + Silero VAD)
 speech_gate_enabled = true
 speech_gate_rms_db_floor = -50.0
 speech_gate_min_speech_fraction = 0.12
@@ -30,6 +30,7 @@ ollama_host = "http://localhost:11434"
 # Speaker recognition
 speaker_enroll = true
 speaker_identify_threshold = 0.58
+speaker_db_file = 'speakers_db.json'
 
 # Microphone (empty = OS default; applies next recording)
 audio_input_device = ""

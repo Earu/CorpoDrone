@@ -61,7 +61,7 @@ fn load_config() -> Config {
         python_script,
         speakers_file: "speakers.json".to_string(),
         ollama_host: "http://localhost:11434".to_string(),
-        ollama_model: "llama3.1:8b".to_string(),
+        ollama_model: "mistral".to_string(),
         summarize: true,
     };
 
@@ -439,10 +439,11 @@ fn get_settings() -> serde_json::Value {
         "speech_gate_min_speech_fraction": 0.12,
         "speech_gate_silero_threshold": 0.5,
         "summarize":                   true,
-        "ollama_model":                "llama3.1:8b",
+        "ollama_model":                "mistral",
         "ollama_host":                 "http://localhost:11434",
         "speaker_enroll":              true,
         "speaker_identify_threshold":  0.58,
+        "speaker_db_file":             "speakers_db.json",
         "audio_input_device":          "",
     });
 
@@ -467,7 +468,7 @@ fn get_settings() -> serde_json::Value {
         match k {
             "whisper_model" | "whisper_device" | "whisper_compute_type" |
             "ollama_model"  | "ollama_host"    | "hf_token" |
-            "audio_input_device" => {
+            "speaker_db_file" | "audio_input_device" => {
                 m.insert(k.to_string(), serde_json::Value::String(v.to_string()));
             }
             "diarize" | "summarize" | "speaker_enroll" | "speech_gate_enabled" => {
@@ -593,6 +594,7 @@ ollama_host = \"{ollama_host}\"
 # Speaker recognition
 speaker_enroll = {speaker_enroll}
 speaker_identify_threshold = {speaker_identify_threshold}
+speaker_db_file = '{speaker_db_file}'
 
 # Microphone (empty = OS default; applies next recording)
 audio_input_device = \"{audio_input_device}\"
@@ -613,10 +615,30 @@ audio_input_device = \"{audio_input_device}\"
         speech_gate_silero_threshold =
             fmt_float(f64_val!("speech_gate_silero_threshold", 0.5)),
         summarize                 = bool_val!("summarize", true),
-        ollama_model              = str_val!("ollama_model", "llama3.1:8b"),
+        ollama_model              = str_val!("ollama_model", "mistral"),
         ollama_host               = str_val!("ollama_host", "http://localhost:11434"),
         speaker_enroll            = bool_val!("speaker_enroll", true),
         speaker_identify_threshold = fmt_float(f64_val!("speaker_identify_threshold", 0.58)),
+        speaker_db_file           = {
+            let raw = str_val!("speaker_db_file", "speakers_db.json");
+            let mut out = String::new();
+            for component in std::path::PathBuf::from(raw).components() {
+                use std::path::Component::*;
+                match component {
+                    Prefix(p) => out.push_str(&p.as_os_str().to_string_lossy()),
+                    RootDir   => out.push('/'),
+                    CurDir    => {}
+                    ParentDir => {
+                        if let Some(pos) = out.rfind('/') { out.truncate(pos); }
+                    }
+                    Normal(n) => {
+                        if !out.is_empty() && !out.ends_with('/') { out.push('/'); }
+                        out.push_str(&n.to_string_lossy());
+                    }
+                }
+            }
+            out
+        },
         audio_input_device        = str_val!("audio_input_device", ""),
     );
 
@@ -749,12 +771,21 @@ async fn set_pipeline_mode(
 
 // ── Speaker identity database ──────────────────────────────────────────────
 
+fn speaker_db_path() -> String {
+    get_settings()
+        .get("speaker_db_file")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .unwrap_or("speakers_db.json")
+        .to_string()
+}
+
 fn read_speakers_db() -> serde_json::Value {
-    let path = std::path::Path::new("speakers_db.json");
-    if !path.exists() {
+    let path = speaker_db_path();
+    if !std::path::Path::new(&path).exists() {
         return serde_json::json!({ "version": 1, "persons": {} });
     }
-    std::fs::read_to_string(path)
+    std::fs::read_to_string(&path)
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or(serde_json::json!({ "version": 1, "persons": {} }))
@@ -762,7 +793,7 @@ fn read_speakers_db() -> serde_json::Value {
 
 fn write_speakers_db(data: &serde_json::Value) {
     if let Ok(s) = serde_json::to_string(data) {
-        let _ = std::fs::write("speakers_db.json", s);
+        let _ = std::fs::write(speaker_db_path(), s);
     }
 }
 
@@ -956,6 +987,19 @@ async fn launch_pipeline(
 }
 
 // ---- File operations ----
+
+/// Open a native folder-picker dialog and return the selected folder path (or null if cancelled).
+#[tauri::command]
+async fn pick_speaker_db_folder() -> Result<Option<String>, String> {
+    let path = tokio::task::spawn_blocking(|| {
+        rfd::FileDialog::new()
+            .pick_folder()
+            .map(|p| p.to_string_lossy().replace('\\', "/"))
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(path)
+}
 
 /// Open a native file-picker dialog and return the selected path (or null if cancelled).
 #[tauri::command]
@@ -1345,6 +1389,7 @@ pub fn run() {
             enroll_speaker,
             delete_speaker,
             rename_speaker,
+            pick_speaker_db_folder,
             pick_audio_file,
             import_audio_file,
             check_setup_needed,
