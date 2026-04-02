@@ -620,6 +620,9 @@ async function openSettings() {
   set('max_speakers',               s.max_speakers);
   set('speaker_enroll',             s.speaker_enroll);
   set('speaker_identify_threshold', s.speaker_identify_threshold);
+  const dbFile = (s.speaker_db_file || '').replace(/\\/g, '/');
+  const dbFolder = dbFile.includes('/') ? dbFile.substring(0, dbFile.lastIndexOf('/')) : '';
+  document.getElementById('s-speaker_db_folder').value = dbFolder;
   set('summarize',                  s.summarize);
   set('ollama_model',               s.ollama_model);
   set('ollama_host',                s.ollama_host);
@@ -639,6 +642,11 @@ async function openSettings() {
 
 function closeSettings() {
   showPage('landing');
+}
+
+async function pickSpeakerDbFolder() {
+  const folder = await invoke('pick_speaker_db_folder');
+  if (folder) document.getElementById('s-speaker_db_folder').value = folder;
 }
 
 function settingsToggle(key) {
@@ -748,6 +756,10 @@ async function saveSettings() {
     max_speakers:                Math.round(get('max_speakers')),
     speaker_enroll:              get('speaker_enroll'),
     speaker_identify_threshold:  get('speaker_identify_threshold'),
+    speaker_db_file:             (() => {
+      const folder = (document.getElementById('s-speaker_db_folder')?.value || '').trim();
+      return folder ? folder + '/speakers_db.json' : 'speakers_db.json';
+    })(),
     summarize:                   get('summarize'),
     ollama_model:                get('ollama_model'),
     ollama_host:                 get('ollama_host'),

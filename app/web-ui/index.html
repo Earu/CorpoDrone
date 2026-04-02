@@ -249,6 +249,17 @@
             <span class="settings-hint">Cosine similarity for voice match (0.5–0.7 recommended)</span>
           </div>
         </div>
+
+        <div class="settings-row">
+          <label class="settings-label">Speaker database folder</label>
+          <div class="settings-control">
+            <div style="display:flex;gap:6px;align-items:center">
+              <input class="settings-input" type="text" id="s-speaker_db_folder" placeholder="(app folder)">
+              <button class="btn-ghost" type="button" onclick="pickSpeakerDbFolder()" style="white-space:nowrap">Browse…</button>
+            </div>
+            <span class="settings-hint">Folder where <code>speakers_db.json</code> is stored (leave empty for app default)</span>
+          </div>
+        </div>
       </div>
 
       <div class="settings-group">
@@ -267,7 +278,7 @@
         <div class="settings-row settings-dependent" data-depends="summarize">
           <label class="settings-label">Ollama model</label>
           <div class="settings-control">
-            <input class="settings-input" type="text" id="s-ollama_model" placeholder="llama3.1:8b">
+            <input class="settings-input" type="text" id="s-ollama_model" placeholder="mistral">
             <span class="settings-hint">Any model pulled in Ollama (llama3.1:8b, qwen2.5:7b, mistral, …)</span>
           </div>
         </div>

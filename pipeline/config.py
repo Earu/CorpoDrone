@@ -64,7 +64,7 @@ class Config:
 
     # Summarization (generated once at end of session)
     summarize: bool = True
-    ollama_model: str = "llama3.1:8b"
+    ollama_model: str = "mistral"
     ollama_host: str = "http://localhost:11434"
 
     # Speaker persistence

@@ -51,7 +51,7 @@ def _build_transcript_text(segments: List[Dict[str, Any]]) -> str:
 class Summarizer:
     def __init__(
         self,
-        model: str = "llama3.1:8b",
+        model: str = "mistral",
         host: str = "http://localhost:11434",
     ):
         self.model = model
