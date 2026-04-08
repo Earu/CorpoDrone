@@ -154,6 +154,11 @@ async fn probe_python_candidates() -> Option<(Vec<String>, String)> {
         vec!["py".into(), "-3.11".into()],
         vec!["python3.12".into()],
         vec!["python3.11".into()],
+        vec!["python3".into()],
+        // macOS GUI apps don't inherit the shell PATH, so Homebrew
+        // installs won't be found by bare name. Try absolute paths.
+        vec!["/opt/homebrew/bin/python3".into()],
+        vec!["/usr/local/bin/python3".into()],
     ];
     for parts in candidates {
         let mut cmd = tokio::process::Command::new(&parts[0]);
@@ -178,7 +183,9 @@ async fn probe_python_candidates() -> Option<(Vec<String>, String)> {
                         s
                     }
                 };
-                return Some((parts, ver));
+                if ver.contains("3.11") || ver.contains("3.12") {
+                    return Some((parts, ver));
+                }
             }
         }
     }
