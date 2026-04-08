@@ -76,7 +76,8 @@ STRICT RULES — do not break any of these:
 4. Do NOT invent, infer, or hallucinate anything not in the notes.
 5. De-duplicate participants and merge overlapping topics.
 6. Preserve ALL action items, decisions, and open questions — do not drop any.
-7. If a topic spans multiple chunks, combine the details into one coherent entry.
+7. If a topic spans multiple parts, combine the details into one coherent entry.
+8. Do NOT mention "chunks", "parts", "sections", or any internal processing structure in the report.
 
 Your report MUST be in this exact format:
 ## Overview
@@ -96,7 +97,7 @@ USER_TRANSCRIPT_PREFIX = (
 MAP_USER_PREFIX = "Meeting transcript chunk ({chunk_label}). Extract notes from this chunk only.\n\n"
 
 REDUCE_USER_PREFIX = (
-    "Below are structured notes extracted from {n_chunks} consecutive chunks of the same meeting. "
+    "Below are structured notes extracted from {n_chunks} consecutive segments of the same meeting. "
     "Merge them into a single report.\n\n"
 )
 
@@ -222,7 +223,7 @@ class Summarizer:
             )
             msg = response.message if hasattr(response, "message") else response["message"]
             content = msg.content if hasattr(msg, "content") else msg["content"]
-            content = content.strip()
+            content = (content or "").strip()
 
         return _strip_markdown_fences(content)
 
@@ -252,7 +253,7 @@ class Summarizer:
     def _reduce(self, chunk_notes: List[str], progress_cb: Optional[Callable[[int], None]] = None) -> str:
         """Merge per-chunk notes into the final report."""
         combined = "\n\n---\n\n".join(
-            f"### Chunk {i+1}\n{notes}" for i, notes in enumerate(chunk_notes)
+            f"### Segment {i+1}\n{notes}" for i, notes in enumerate(chunk_notes)
         )
         messages = [
             {"role": "system", "content": REDUCE_SYSTEM_PROMPT},
