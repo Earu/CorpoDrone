@@ -812,16 +812,37 @@ fn get_speaker_database() -> serde_json::Value {
 #[tauri::command]
 fn enroll_speaker(name: String, person_id: Option<String>, embedding: Vec<f64>) -> serde_json::Value {
     let mut db = read_speakers_db();
-    let pid = person_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+
+    // When no explicit person_id is given, look for an existing person with the same
+    // name (case-insensitive) so differently-cased duplicates are folded together.
+    let pid = person_id.unwrap_or_else(|| {
+        let name_lower = name.to_lowercase();
+        db["persons"].as_object()
+            .and_then(|persons| {
+                persons.iter()
+                    .find(|(_, p)| p["name"].as_str().map(|n| n.to_lowercase()) == Some(name_lower.clone()))
+                    .map(|(id, _)| id.clone())
+            })
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string())
+    });
+
     if let Some(persons) = db["persons"].as_object_mut() {
         if let Some(person) = persons.get_mut(&pid) {
-            if let Some(arr) = person["embeddings"].as_array_mut() {
-                arr.push(serde_json::json!(embedding));
+            // Only append non-empty embeddings
+            if !embedding.is_empty() {
+                if let Some(arr) = person["embeddings"].as_array_mut() {
+                    arr.push(serde_json::json!(embedding));
+                }
             }
         } else {
+            let embeddings = if embedding.is_empty() {
+                serde_json::json!([])
+            } else {
+                serde_json::json!([embedding])
+            };
             persons.insert(pid.clone(), serde_json::json!({
                 "name": name,
-                "embeddings": [embedding],
+                "embeddings": embeddings,
             }));
         }
     }

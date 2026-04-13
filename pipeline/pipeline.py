@@ -429,9 +429,10 @@ class Pipeline:
             self._clip_accum[stable_id] = acc
 
     def _find_stable_id_by_name(self, name: str) -> Optional[str]:
-        """Return the stable_id already assigned to this name, or None."""
+        """Return the stable_id already assigned to this name (case-insensitive), or None."""
+        name_lower = name.lower()
         for sid, info in self.tracker._speakers.items():
-            if info.get("name") == name:
+            if info.get("name", "").lower() == name_lower:
                 return sid
         return None
 
@@ -462,7 +463,7 @@ class Pipeline:
         if self._session_id != session_id:
             return
         person_id, person_name, score = self._speaker_db.identify(embedding)
-        if person_id:
+        if person_id and person_name:
             log.info("live_speaker_identified", stable_id=stable_id, name=person_name, score=round(score, 3))
             self._apply_identification(stable_id, person_name)
         else:
@@ -472,13 +473,15 @@ class Pipeline:
     # Post-session helpers
     # ------------------------------------------------------------------
 
-    def _collect_enrollment_data(self) -> List[Dict[str, Any]]:
+    def _collect_enrollment_data(self) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
         """
         For each loopback diarized speaker:
           - Try to identify against the DB using their collected clips
           - If identified: send speaker_update so the UI shows the known name retroactively
-          - If unknown: include in enrollment payload (clips + computed embedding)
-        Returns list of {session_id, name, clips: [base64wav], embedding: [float]} for unknowns.
+            and include in knowns list so the user can correct misidentifications
+          - If unknown: include in unknowns list for labelling
+        Returns (unknowns, knowns) where each is a list of
+        {session_id, name, clips: [{audio, embedding}]} and knowns entries also carry person_id.
         """
         import io, wave, base64
 
@@ -492,6 +495,7 @@ class Pipeline:
             return base64.b64encode(buf.getvalue()).decode()
 
         unknowns = []
+        knowns = []
 
         for stable_id, clips in list(self._clip_store.items()):
             if not clips:
@@ -505,17 +509,6 @@ class Pipeline:
             combined = np.concatenate(clips)
             embedding = self._embedder.extract(combined) if self._embedder and self._embedder.available else None
 
-            if embedding is not None:
-                person_id, person_name, score = self._speaker_db.identify(embedding)
-                if person_id:
-                    log.info("speaker_identified", stable_id=stable_id, name=person_name, score=round(score, 3))
-                    self._apply_identification(stable_id, person_name)
-                    continue  # known — no enrollment needed
-                log.info("speaker_not_identified", stable_id=stable_id, best_score=round(score, 3),
-                         threshold=self._speaker_db._threshold)
-
-            # Unknown speaker — prepare per-clip enrollment payload
-            current_name = self.tracker.get_name(stable_id)
             clip_payloads = []
             for clip in clips[:self._MAX_CLIPS]:
                 clip_emb = self._embedder.extract(clip) if self._embedder and self._embedder.available else None
@@ -523,13 +516,31 @@ class Pipeline:
                     "audio": to_base64_wav(clip),
                     "embedding": clip_emb.tolist() if clip_emb is not None else [],
                 })
+
+            if embedding is not None:
+                person_id, person_name, score = self._speaker_db.identify(embedding)
+                if person_id and person_name:
+                    log.info("speaker_identified", stable_id=stable_id, name=person_name, score=round(score, 3))
+                    self._apply_identification(stable_id, person_name)
+                    knowns.append({
+                        "session_id": stable_id,
+                        "name": person_name,
+                        "person_id": person_id,
+                        "clips": clip_payloads,
+                    })
+                    continue
+                log.info("speaker_not_identified", stable_id=stable_id, best_score=round(score, 3),
+                         threshold=self._speaker_db._threshold)
+
+            # Unknown speaker — prepare per-clip enrollment payload
+            current_name = self.tracker.get_name(stable_id)
             unknowns.append({
                 "session_id": stable_id,
                 "name": current_name,
                 "clips": clip_payloads,
             })
 
-        return unknowns
+        return unknowns, knowns
 
     def _handle_misc_cmd(self, cmd: dict):
         """
@@ -579,7 +590,7 @@ class Pipeline:
             except queue.Empty:
                 continue
 
-    def _identify_loopback_speakers(self, audio: np.ndarray, segments: list) -> tuple:
+    def _identify_loopback_speakers(self, audio: np.ndarray, segments: list) -> tuple[dict, dict, dict]:
         """
         Given (optionally diarized) loopback segments, extract per-speaker embeddings
         and identify against the DB.
@@ -608,6 +619,7 @@ class Pipeline:
 
         spk_map = {}
         unknown_audio = {}
+        known_audio = {}   # label -> (combined_audio, person_id, person_name)
         remote_counter = 0
         for label, chunks in spk_audio.items():
             if not chunks:
@@ -631,8 +643,9 @@ class Pipeline:
                     if c_norm > 1e-9:
                         centroid /= c_norm
                         person_id, person_name, score = self._speaker_db.identify(centroid)
-                        if person_id:
+                        if person_id and person_name:
                             spk_map[label] = person_name
+                            known_audio[label] = (combined, person_id, person_name)
                             log.info("retranscribe_speaker_identified",
                                      label=label, name=person_name,
                                      score=round(score, 3), n_clips=len(normed_embs))
@@ -641,12 +654,12 @@ class Pipeline:
             remote_counter += 1
             spk_map[label] = "Remote" if remote_counter == 1 else f"Remote {remote_counter}"
             unknown_audio[label] = np.concatenate(chunks)
-        return spk_map, unknown_audio
+        return spk_map, unknown_audio, known_audio
 
-    def _send_retranscript_enrollment(self, spk_map: dict, unknown_audio: dict):
+    def _send_retranscript_enrollment(self, spk_map: dict, unknown_audio: dict, known_audio: dict):
         """
-        Build and send an enrollment_data event for speakers that were not identified
-        during re-transcription.  Called after _identify_loopback_speakers returns unknowns.
+        Build and send an enrollment_data event for speakers processed during re-transcription.
+        Unknowns need labelling; knowns are included so the user can correct misidentifications.
         Clips are sliced from the concatenated per-speaker audio (same 5 s target as live).
         """
         import io, wave, base64
@@ -660,36 +673,54 @@ class Pipeline:
                 w.writeframes((np.clip(samples, -1, 1) * 32767).astype(np.int16).tobytes())
             return base64.b64encode(buf.getvalue()).decode()
 
-        clip_size = int(self._CLIP_TARGET_S * SAMPLE_RATE)
-        min_clip = SAMPLE_RATE  # at least 1 s
-
-        unknowns = []
-        for label, combined in unknown_audio.items():
+        def build_clip_payloads(combined: np.ndarray) -> list:
+            clip_size = int(self._CLIP_TARGET_S * SAMPLE_RATE)
+            min_clip = SAMPLE_RATE  # at least 1 s
             if len(combined) < min_clip:
-                continue
+                return []
             clips = [combined[i:i + clip_size]
                      for i in range(0, len(combined), clip_size)
                      if len(combined[i:i + clip_size]) >= min_clip]
             clips = clips[:self._MAX_CLIPS] or [combined]
-
-            clip_payloads = []
+            payloads = []
             for clip in clips:
                 clip_emb = (self._embedder.extract(clip)
                             if self._embedder and self._embedder.available else None)
-                clip_payloads.append({
+                payloads.append({
                     "audio": to_base64_wav(clip),
                     "embedding": clip_emb.tolist() if clip_emb is not None else [],
                 })
+            return payloads
 
+        unknowns = []
+        for label, combined in unknown_audio.items():
+            clip_payloads = build_clip_payloads(combined)
+            if not clip_payloads:
+                continue
             unknowns.append({
                 "session_id": f"retranscript_{label}",
                 "name": spk_map.get(label, "Remote"),
                 "clips": clip_payloads,
             })
 
-        if unknowns:
-            log.info("retranscript_enrollment_ready", n_speakers=len(unknowns))
-            self.writer.send({"type": "enrollment_data", "speakers": unknowns})
+        knowns = []
+        for label, (combined, person_id, person_name) in known_audio.items():
+            clip_payloads = build_clip_payloads(combined)
+            if not clip_payloads:
+                continue
+            knowns.append({
+                "session_id": f"retranscript_{label}",
+                "name": person_name,
+                "person_id": person_id,
+                "clips": clip_payloads,
+            })
+
+        if unknowns or knowns:
+            log.info("retranscript_enrollment_ready", n_unknowns=len(unknowns), n_knowns=len(knowns))
+            payload = {"type": "enrollment_data", "speakers": unknowns}
+            if knowns:
+                payload["known_speakers"] = knowns
+            self.writer.send(payload)
 
     def _transcribe_chunked(self, audio: np.ndarray, progress_cb=None) -> List[Dict[str, Any]]:
         """Transcribe audio in RETRANSCRIBE_CHUNK_S-second chunks.
@@ -715,13 +746,11 @@ class Pipeline:
 
             # Scale the progress callback so it covers only this chunk's slice of
             # the 0-100 range the caller gave us.
+            _chunk_cb: Optional[Any] = None
             if progress_cb:
                 lo = chunk_start / total_samples
                 hi = chunk_end   / total_samples
-                def _chunk_cb(pct, _lo=lo, _hi=hi):
-                    progress_cb(int((_lo + (_hi - _lo) * pct / 100) * 100))
-            else:
-                _chunk_cb = None
+                _chunk_cb = lambda pct, _lo=lo, _hi=hi: progress_cb(int((_lo + (_hi - _lo) * pct / 100) * 100))
 
             segs = self.transcriber.transcribe_with_progress(chunk, _chunk_cb)
             if torch.cuda.is_available():
@@ -793,13 +822,14 @@ class Pipeline:
                             if not _in_muted(base_us + int(s["start"] * 1_000_000),
                                              base_us + int(s["end"] * 1_000_000))]
 
+                spk_map: dict[str, str] = {}
                 if source_tag == SOURCE_LOOPBACK:
                     if self.diarizer and self.diarizer.available:
                         turns = self.diarizer.diarize(audio)
                         segs = self.diarizer.assign_speakers(segs, turns)
-                    spk_map, unknown_audio = self._identify_loopback_speakers(audio, segs)
-                    if self.cfg.speaker_enroll and unknown_audio:
-                        self._send_retranscript_enrollment(spk_map, unknown_audio)
+                    spk_map, unknown_audio, known_audio = self._identify_loopback_speakers(audio, segs)
+                    if self.cfg.speaker_enroll and (unknown_audio or known_audio):
+                        self._send_retranscript_enrollment(spk_map, unknown_audio, known_audio)
 
                 for seg in segs:
                     text = seg.get("text", "").strip()
@@ -935,9 +965,12 @@ class Pipeline:
 
         # --- Post-processing ---
         if self._clip_store and self.cfg.speaker_enroll:
-            enrollment_speakers = self._collect_enrollment_data()
-            if enrollment_speakers:
-                self.writer.send({"type": "enrollment_data", "speakers": enrollment_speakers})
+            unknowns, knowns = self._collect_enrollment_data()
+            if unknowns or knowns:
+                payload = {"type": "enrollment_data", "speakers": unknowns}
+                if knowns:
+                    payload["known_speakers"] = knowns
+                self.writer.send(payload)
 
         self.writer.send({"type": "status", "state": "session_ended"})
 

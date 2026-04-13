@@ -27,7 +27,7 @@
         </button>
       </div>
       <div class="landing-secondary-btns">
-        <button class="btn-voices" onclick="openVoicesModal()">VOICE DATABASE</button>
+        <button class="btn-voices" onclick="openVoicesPage()">VOICE DATABASE</button>
         <button class="btn-settings-gear" onclick="openSettings()" title="Settings">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
             <circle cx="12" cy="12" r="3"/>
@@ -413,10 +413,30 @@
   <div id="enrollment-modal" class="modal-overlay hidden">
     <div class="modal">
       <div class="modal-header">
-        <div class="modal-title">UNKNOWN SPEAKERS</div>
-        <div class="modal-sub">Label each speaker or skip to continue</div>
+        <div class="enrollment-modal-header-top">
+          <div>
+            <div class="modal-title">SPEAKER ENROLLMENT</div>
+            <div class="modal-sub">Review and label detected speakers</div>
+          </div>
+          <button class="btn-enroll-new-speaker" onclick="showEnrollNewSpeakerForm()">+ New Speaker</button>
+        </div>
+        <div id="enrollment-tabs" class="enrollment-tabs">
+          <button id="enrollment-tab-unknown" class="enrollment-tab active" onclick="switchEnrollTab('unknown')">
+            Unknown <span id="enrollment-tab-unknown-badge" class="enrollment-tab-badge"></span>
+          </button>
+          <button id="enrollment-tab-known" class="enrollment-tab" onclick="switchEnrollTab('known')">
+            Known <span id="enrollment-tab-known-badge" class="enrollment-tab-badge"></span>
+          </button>
+        </div>
       </div>
       <div class="modal-body">
+        <div id="enrollment-new-speaker-form" class="enrollment-new-speaker-form hidden">
+          <input id="enrollment-new-speaker-name" class="enrollment-new-speaker-input" type="text"
+            placeholder="New speaker name…"
+            onkeydown="if(event.key==='Enter') confirmEnrollNewSpeaker(); if(event.key==='Escape') hideEnrollNewSpeakerForm();" />
+          <button class="btn-ghost" onclick="confirmEnrollNewSpeaker()">Add</button>
+          <button class="btn-ghost" onclick="hideEnrollNewSpeakerForm()">Cancel</button>
+        </div>
         <div id="enrollment-carousel">
           <!-- populated by JS -->
         </div>
@@ -511,18 +531,50 @@
     </div>
   </div>
 
-  <!-- ── Voice database modal ───────────────────────────────────────── -->
-  <div id="voices-modal" class="modal-overlay hidden">
+  <!-- ── Voice database page ───────────────────────────────────────── -->
+  <div id="voices" class="hidden">
+    <header>
+      <div id="brand">
+        <h1>CORPO<span class="hi">DRONE</span></h1>
+        <div class="header-indicators">
+          <span class="status-label">VOICE DATABASE</span>
+        </div>
+      </div>
+      <div class="header-right">
+        <button class="btn-ghost" onclick="closeVoicesPage()">← Back</button>
+      </div>
+    </header>
+    <div id="voices-body">
+      <div id="voices-toolbar">
+        <div class="voices-search-wrap">
+          <span class="voices-search-icon">⌕</span>
+          <input id="voices-search" class="voices-search-input" type="text"
+            placeholder="Search speakers…"
+            oninput="filterVoices(this.value)" />
+        </div>
+        <button class="btn-voices-new" onclick="showNewSpeakerForm()">+ NEW</button>
+      </div>
+      <div id="voices-new-form" class="voices-new-form hidden">
+        <input id="voices-new-name" class="voices-new-name-input" type="text"
+          placeholder="Speaker name…"
+          onkeydown="if(event.key==='Enter') confirmNewSpeaker(); if(event.key==='Escape') hideNewSpeakerForm();" />
+        <button class="btn-ghost" onclick="confirmNewSpeaker()">Add</button>
+        <button class="btn-ghost" onclick="hideNewSpeakerForm()">Cancel</button>
+      </div>
+      <div id="voices-list"><!-- populated by JS --></div>
+    </div>
+  </div>
+
+  <!-- ── Delete speaker confirm modal ─────────────────────────────── -->
+  <div id="delete-speaker-modal" class="modal-overlay hidden">
     <div class="modal">
       <div class="modal-header">
-        <div class="modal-title">VOICE DATABASE</div>
-        <div class="modal-sub">Manage recognized speakers</div>
-      </div>
-      <div class="modal-body">
-        <div id="voices-list"><!-- populated by JS --></div>
+        <div class="modal-title">DELETE SPEAKER</div>
+        <div class="modal-sub" id="delete-speaker-modal-sub">Are you sure?</div>
       </div>
       <div class="modal-footer">
-        <button class="btn-ghost" onclick="closeVoicesModal()">Close</button>
+        <button class="btn-ghost" onclick="cancelDeleteVoice()">Cancel</button>
+        <button class="btn-modal-danger" onclick="confirmDeleteVoice()">Delete</button>
       </div>
     </div>
   </div>

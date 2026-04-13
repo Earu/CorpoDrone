@@ -1387,97 +1387,138 @@ button.btn-ghost:hover { color: var(--text); border-color: var(--text-muted); }
   border-top: 1px solid var(--border);
 }
 
-.enrollment-assign-label {
-  font-family: var(--mono);
-  font-size: 11px;
-  color: var(--text-sub);
-  letter-spacing: 0.08em;
-  margin-bottom: 10px;
-}
-
-.enrollment-combo-input {
-  width: 100%;
-  background: transparent;
-  border: 1px solid var(--border-hi);
-  color: var(--text);
-  padding: 6px 10px;
-  font-family: var(--font);
-  font-size: 13px;
-  font-weight: 600;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  outline: none;
-  box-sizing: border-box;
-  transition: border-color 0.1s;
-}
-.enrollment-combo-input:focus { border-color: var(--accent); }
-.enrollment-combo-input::placeholder { color: var(--text-muted); text-transform: none; font-weight: 500; }
-
-.enrollment-persons {
+/* ── Enrollment modal header ─────────────────────────────────────────── */
+.enrollment-modal-header-top {
   display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-bottom: 12px;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
 }
 
-.enrollment-person-btn {
-  font-family: var(--font);
-  font-size: 13px;
-  font-weight: 600;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  padding: 5px 16px;
+.btn-enroll-new-speaker {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  padding: 5px 12px;
   background: transparent;
-  color: var(--text-muted);
-  border: 1px solid var(--border-hi);
-  border-radius: 0;
-  cursor: pointer;
-  transition: color 0.1s, border-color 0.1s;
-}
-.enrollment-person-btn:hover { color: var(--text); border-color: var(--text-muted); }
-.enrollment-person-btn.selected {
   color: var(--accent);
-  border-color: var(--accent);
+  border: 1px solid var(--accent);
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+  transition: background 0.1s;
+}
+.btn-enroll-new-speaker:hover { background: var(--accent-dim); }
+
+.enrollment-new-speaker-form {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  margin-bottom: 8px;
+  border: 1px solid var(--accent);
   background: var(--accent-dim);
 }
 
-.enrollment-new-row {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-  margin-top: 8px;
-}
-
-.enrollment-new-input {
+.enrollment-new-speaker-input {
   flex: 1;
   background: transparent;
-  border: 1px solid var(--border-hi);
+  border: none;
+  border-bottom: 1px solid var(--border-hi);
+  outline: none;
   color: var(--text);
-  padding: 5px 10px;
   font-family: var(--font);
   font-size: 13px;
   font-weight: 600;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  outline: none;
+  padding: 2px 4px;
   transition: border-color 0.1s;
 }
-.enrollment-new-input:focus { border-color: var(--accent); }
-.enrollment-new-input::placeholder { color: var(--text-muted); text-transform: none; font-weight: 500; }
+.enrollment-new-speaker-input:focus { border-bottom-color: var(--accent); }
+.enrollment-new-speaker-input::placeholder { text-transform: none; font-weight: 500; color: var(--text-muted); }
 
-.enrollment-new-btn {
+/* ── Enrollment speaker picker ───────────────────────────────────────── */
+.enroll-picker {
+  position: relative;
+}
+
+.enroll-picker-row {
+  display: flex;
+  align-items: center;
+  border: 1px solid var(--border-hi);
+  transition: border-color 0.1s;
+}
+.enroll-picker-row:focus-within { border-color: var(--accent); }
+.enroll-picker.selected .enroll-picker-row { border-color: var(--accent); background: var(--accent-dim); }
+
+.enroll-picker-input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--text);
+  padding: 7px 10px;
+  font-family: var(--font);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  cursor: text;
+}
+.enroll-picker-input[readonly] { cursor: default; color: var(--accent); }
+.enroll-picker-input::placeholder { text-transform: none; font-weight: 500; color: var(--text-muted); letter-spacing: 0; }
+
+.enroll-picker-clear {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  font-size: 16px;
+  line-height: 1;
+  padding: 0 10px;
+  cursor: pointer;
+  transition: color 0.1s;
+}
+.enroll-picker-clear:hover { color: var(--danger); }
+
+.enroll-picker-list {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  z-index: 50;
+  background: var(--surface);
+  border: 1px solid var(--border-hi);
+  border-top: none;
+  max-height: 160px;
+  overflow-y: auto;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.enroll-picker-list::-webkit-scrollbar { width: 2px; }
+.enroll-picker-list::-webkit-scrollbar-thumb { background: var(--border-hi); }
+
+.enroll-picker-item {
+  padding: 8px 12px;
+  font-family: var(--font);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-sub);
+  cursor: pointer;
+  transition: background 0.08s, color 0.08s;
+}
+.enroll-picker-item:hover { background: var(--accent-dim); color: var(--accent); }
+
+.enroll-picker-empty {
+  padding: 8px 12px;
   font-family: var(--mono);
   font-size: 11px;
-  padding: 5px 12px;
-  background: transparent;
   color: var(--text-muted);
-  border: 1px solid var(--border-hi);
-  border-radius: 0;
-  cursor: pointer;
-  white-space: nowrap;
-  transition: color 0.1s, border-color 0.1s;
+  letter-spacing: 0.06em;
 }
-.enrollment-new-btn:hover { color: var(--text); border-color: var(--text-muted); }
 
 .enrollment-page-label {
   font-family: var(--mono);
@@ -1495,22 +1536,195 @@ button.btn-ghost:hover { color: var(--text); border-color: var(--text-muted); }
   border-top: 1px solid var(--border);
 }
 
-/* ── Voices DB list ──────────────────────────────────────────────────── */
+/* ── Enrollment tabs ─────────────────────────────────────────────────── */
+.enrollment-tabs {
+  display: flex;
+  gap: 4px;
+  margin-top: 12px;
+}
+
+.enrollment-tab-badge {
+  display: inline-block;
+  font-size: 10px;
+  font-family: var(--mono);
+  background: var(--border-hi);
+  color: var(--text-muted);
+  padding: 1px 5px;
+  margin-left: 4px;
+  letter-spacing: 0;
+}
+.enrollment-tab.active .enrollment-tab-badge {
+  background: var(--accent);
+  color: var(--bg);
+}
+
+.enrollment-tab-empty {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text-muted);
+  letter-spacing: 0.06em;
+  padding: 24px 0;
+  text-align: center;
+}
+
+.enrollment-tab {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  padding: 5px 14px;
+  border: 1px solid var(--border-hi);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: color 0.1s, border-color 0.1s, background 0.1s;
+}
+.enrollment-tab:hover { color: var(--text); border-color: var(--text-muted); }
+.enrollment-tab.active {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--accent-dim);
+}
+
+.enrollment-speaker-label-known {
+  color: var(--cyan);
+}
+
+
+/* ── Voices page ─────────────────────────────────────────────────────── */
+#voices {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+#voices-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 24px 48px 48px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+#voices-body::-webkit-scrollbar       { width: 4px; }
+#voices-body::-webkit-scrollbar-track { background: transparent; }
+#voices-body::-webkit-scrollbar-thumb { background: var(--border-hi); }
+
+#voices-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.voices-search-wrap {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  border: 1px solid var(--border-hi);
+  padding: 0 10px;
+  gap: 8px;
+}
+.voices-search-wrap:focus-within { border-color: var(--accent); }
+
+.voices-search-icon {
+  font-size: 16px;
+  color: var(--text-muted);
+  line-height: 1;
+  user-select: none;
+}
+
+.voices-search-input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 14px;
+  padding: 8px 0;
+  letter-spacing: 0.04em;
+}
+.voices-search-input::placeholder { color: var(--text-muted); font-weight: 500; text-transform: none; }
+
+.btn-voices-new {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  padding: 8px 16px;
+  background: transparent;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.1s;
+}
+.btn-voices-new:hover { background: var(--accent-dim); }
+
+.voices-new-form {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-hi);
+  background: var(--accent-dim);
+}
+
+.voices-new-name-input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--border-hi);
+  outline: none;
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 2px 4px;
+  transition: border-color 0.1s;
+}
+.voices-new-name-input:focus { border-bottom-color: var(--accent); }
+.voices-new-name-input::placeholder { text-transform: none; font-weight: 500; color: var(--text-muted); }
+
+#voices-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.voices-group-header {
+  font-family: var(--font);
+  font-size: 28px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--accent);
+  padding: 20px 0 4px;
+  user-select: none;
+}
+.voices-group-header:first-child { padding-top: 4px; }
+
 .voices-empty {
   font-family: var(--mono);
   font-size: 12px;
   color: var(--text-muted);
-  padding: 8px 0;
+  padding: 24px 0;
   letter-spacing: 0.08em;
+  text-align: center;
 }
 
 .voice-row {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 8px 0;
+  padding: 8px 4px;
   border-bottom: 1px solid var(--border);
+  transition: background 0.1s;
 }
+.voice-row:hover { background: rgba(255,255,255,0.02); }
+.voice-row:hover .voice-icon-btn { opacity: 0.5; }
+.voice-row.editing .voice-icon-btn { opacity: 1; }
 
 .voice-name-input {
   flex: 1;
@@ -1518,16 +1732,22 @@ button.btn-ghost:hover { color: var(--text); border-color: var(--text-muted); }
   border: none;
   border-bottom: 1px solid transparent;
   color: var(--text);
-  padding: 2px 4px;
+  padding: 4px 6px;
   font-family: var(--font);
   font-size: 14px;
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
   outline: none;
-  transition: border-color 0.1s, color 0.1s;
+  cursor: default;
+  transition: border-color 0.1s, color 0.1s, background 0.1s;
 }
-.voice-name-input:focus { border-bottom-color: var(--accent); color: var(--accent); }
+.voice-row.editing .voice-name-input {
+  border-bottom-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-dim);
+  cursor: text;
+}
 
 .voice-count {
   font-family: var(--mono);
@@ -1536,19 +1756,27 @@ button.btn-ghost:hover { color: var(--text); border-color: var(--text-muted); }
   white-space: nowrap;
 }
 
-.voice-delete-btn {
-  font-family: var(--mono);
-  font-size: 10px;
-  padding: 3px 8px;
+.voice-icon-btn {
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   background: transparent;
-  color: var(--danger);
-  border: 1px solid var(--danger);
-  border-radius: 0;
+  border: none;
   cursor: pointer;
-  opacity: 0.6;
-  transition: opacity 0.1s;
+  opacity: 0;
+  transition: opacity 0.1s, color 0.1s;
+  flex-shrink: 0;
 }
-.voice-delete-btn:hover { opacity: 1; }
+.voice-icon-btn svg { width: 15px; height: 15px; }
+
+.voice-edit-btn { color: var(--text-sub); }
+.voice-edit-btn:hover { color: var(--accent); opacity: 1 !important; }
+.voice-row.editing .voice-edit-btn { color: var(--accent); }
+
+.voice-delete-btn { color: var(--text-sub); }
+.voice-delete-btn:hover { color: var(--danger); opacity: 1 !important; }
 
 /* ════════════════════════════════════════════════════════════════════
    DEBUG LOG DRAWER
