@@ -50,6 +50,12 @@ Capture audio from your microphone and speakers simultaneously, transcribe with 
 
 The Tauri UI depends on the usual **WebKitGTK + GTK 3** stack ([Tauri Linux prerequisites](https://tauri.app/start/prerequisites/)). Full desktop installations typically include those libraries; **minimal or server images** and **containers** often do not, which surfaces as missing shared libraries when building or running prebuilt binaries.
 
+#### Wayland
+
+On Wayland with NVIDIA's proprietary driver, WebKitGTK's DMABUF renderer kills the webview at startup with `Error 71 (Protocol error) dispatching to Wayland display` ([WebKit #280210](https://bugs.webkit.org/show_bug.cgi?id=280210), still open). The app works around it by setting `__NV_DISABLE_EXPLICIT_SYNC=1` when a Wayland session is detected. Only the NVIDIA driver reads that variable, so AMD and Intel are unaffected and keep the fast rendering path either way. Set it yourself to override.
+
+If a blank window persists, fall back to `WEBKIT_DISABLE_DMABUF_RENDERER=1`, which disables the DMABUF path entirely (slower, but works on setups the above doesn't cover).
+
 #### Building from source
 
 Debian/Ubuntu-style packages:
